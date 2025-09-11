@@ -1,0 +1,36 @@
+/* css/table.css - Estilos para las tablas de datos */
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 1rem;
+}
+
+th, td {
+    text-align: left;
+    padding: 1rem;
+    border-bottom: 1px solid var(--border-color);
+    vertical-align: middle;
+    font-size:.8rem;
+}
+
+th {
+    background-color: var(--secondary-color);
+    font-weight: 600;
+    font-size: 0.875rem;
+    color: var(--text-light);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+tbody tr:last-child td {
+    border-bottom: none;
+}
+
+tbody tr:hover {
+    background-color: #F9FAFB;
+}
+
+.dire-dot .dot{display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:middle}
+  .dire-dot .dot.green{background:#16a34a} /* verde */
+  .dire-dot .dot.grey{background:#9ca3af}  /* gris  */

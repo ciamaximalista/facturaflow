@@ -1,0 +1,127 @@
+/* style.css - Hoja de estilos principal */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* Importa las variables y los estilos base */
+@import url('css/variables.css');
+@import url('css/base.css');
+
+/* Importa los estilos de los componentes */
+@import url('css/layout.css');
+@import url('css/card.css');
+@import url('css/form.css');
+@import url('css/table.css');
+@import url('css/invoice-view.css');
+
+/* Estilos adicionales movidos de layout.php para centralizar CSS */
+.is-cancelled {
+    color: #888;
+}
+
+.is-cancelled a {
+    color: #888;
+    text-decoration: line-through;
+}
+
+.muted {
+    font-size: 0.9em;
+    color: #777;
+}
+
+/* --- NUEVOS ESTILOS PARA LAS PÁGINAS DE AUTENTICACIÓN --- */
+
+.auth-body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    background-color: var(--secondary-color);
+}
+
+.auth-container {
+    width: 100%;
+    max-width: 450px;
+    padding: 1rem;
+}
+
+.auth-card {
+    background-color: var(--white);
+    padding: 2.5rem;
+    border-radius: var(--border-radius);
+    box-shadow: var(--box-shadow);
+}
+
+.auth-header {
+    text-align: center;
+    margin-bottom: 2rem;
+}
+
+.auth-logo {
+    width: 70px;
+    height: auto;
+    margin-bottom: 1rem;
+}
+
+.auth-header h1 {
+    font-size: 1.75rem;
+    margin: 0 0 0.5rem 0;
+}
+
+.auth-header p {
+    color: var(--text-light);
+    margin: 0;
+}
+
+.btn-block {
+    width: 100%;
+    padding: 0.85rem;
+    font-size: 1rem;
+    margin-top: 1rem;
+}
+
+.auth-footer {
+    text-align: center;
+    margin-top: 1.5rem;
+    font-size: 0.9em;
+}
+
+.auth-allies {
+    text-align: center;
+    margin-top: 2rem;
+    font-size:16px;
+}
+
+.auth-allies img {
+    max-width: 400px;
+    opacity: 0.7;
+}
+
+.form-message {
+    padding: 0.75rem;
+    margin-bottom: 1rem;
+    border-radius: 6px;
+    text-align: center;
+    font-size: 0.9em;
+    display: none; /* Se muestra con JS */
+}
+
+.form-message.success {
+    background-color: #D1FAE5;
+    color: #065F46;
+    display: block;
+}
+
+.form-message.error {
+    background-color: #FEE2E2;
+    color: #991B1B;
+    display: block;
+}
+
+.form-row {
+    display: flex;
+    gap: 1rem;
+}
+
+.form-row .form-group {
+    flex: 1;
+}
+

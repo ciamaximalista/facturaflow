@@ -1,0 +1,15 @@
+{
+    "require": {
+        "chillerlan/php-qrcode": "^4.3",
+        "josemmo/facturae-php": "^1.8",
+        "josemmo/verifactu-php": "^0.0.2"
+    },
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/josemmo/Facturae-PHP"
+        }
+    ],
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}

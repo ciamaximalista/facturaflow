@@ -1,0 +1,117 @@
+/* css/invoice-view.css - Estilos con datos de factura reubicados */
+
+.invoice-view-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+}
+
+.invoice-container {
+    padding: 2.5rem 3rem;
+}
+
+.invoice-header-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 2rem;
+    padding-bottom: 2rem;
+    border-bottom: 1px solid var(--border-color);
+    align-items: start;
+}
+
+.invoice-logo {
+    max-width: 180px;
+    max-height: 70px;
+    margin-bottom: 1rem;
+}
+
+.issuer-details p, .client-details p {
+    margin: 0;
+    line-height: 1.6;
+    color: var(--text-light);
+}
+
+.client-details {
+    text-align: left;
+}
+
+.qr-code img {
+    width: 120px;
+    height: 120px;
+}
+
+/* ESTILOS PARA EL BLOQUE REUBICADO */
+.invoice-meta-data {
+    display: flex;
+    justify-content: space-between;
+    padding: 1.5rem 0;
+    margin-bottom: 1rem;
+}
+.invoice-meta-data div {
+    flex-basis: 48%;
+}
+.invoice-meta-data strong {
+    color: var(--text-color);
+    margin-right: 0.5rem;
+}
+.invoice-meta-data span {
+    color: var(--text-light);
+}
+
+.invoice-body {
+    margin-top: 1rem;
+}
+
+.invoice-footer-grid {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 2rem;
+    margin-top: 2.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border-color);
+    align-items: end;
+}
+
+.hash-container {
+    display: flex;
+    gap: 1.5rem;
+    align-items: start;
+}
+
+.hash-details {
+    flex-grow: 1;
+    font-size: 0.75rem;
+    color: var(--text-light);
+    word-break: break-all;
+}
+
+.hash-details strong {
+    color: var(--text-color);
+}
+
+.hash-details p {
+    margin: 0.5rem 0;
+    font-family: monospace;
+    background-color: var(--secondary-color);
+    padding: 0.5rem;
+    border-radius: 4px;
+}
+
+.totals-details {
+    text-align: right;
+}
+
+.total-amount {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: var(--primary-color);
+}
+
+@media print {
+    body { display: block; }
+    .sidebar, .invoice-view-header { display: none; }
+    .main-content { padding: 0; }
+    .card { box-shadow: none; border: 1px solid #ccc; }
+    .invoice-container { padding: 1.5rem; }
+}

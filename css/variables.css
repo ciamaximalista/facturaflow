@@ -1,0 +1,16 @@
+/* css/variables.css - Variables de diseño globales */
+:root {
+    --primary-color: #4F46E5;
+    --primary-hover: #4338CA;
+    --secondary-color: #F3F4F6;
+    --border-color: #D1D5DB;
+    --text-color: #1F2937;
+    --text-light: #6B7280;
+    --white: #FFFFFF;
+    --danger-color: #EF4444;
+    --success-color: #10B981;
+
+    --font-family: 'Inter', sans-serif;
+    --box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    --border-radius: 8px;
+}
