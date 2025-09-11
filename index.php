@@ -376,7 +376,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $outputDir = __DIR__ . '/data/facturae_exports/';
                 @mkdir($outputDir, 0775, true);
                 $facturaeGenerator = new FacturaeGenerator();
-                $xmlPath  = $facturaeGenerator->generatePath($invoiceArray);
                 if (!$xmlPath || !is_file($xmlPath)) {
                     json_response(['success'=>false, 'message'=>'No se pudo generar el Facturae (.xsig)'], 500);
                 }
@@ -1068,7 +1067,6 @@ if ($page === 'export_facturae') {
         $facturaeGenerator = new FacturaeGenerator();
         $outputDir = __DIR__ . '/data/facturae_exports/';
         @mkdir($outputDir, 0775, true);
-        $filePath  = $facturaeGenerator->generatePath($invoiceArray);
         if (!$filePath || !is_file($filePath)) {
             header('Content-Type: text/plain; charset=utf-8');
             die("Error al generar la Factura-e: fichero no creado.");
