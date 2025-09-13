@@ -333,10 +333,17 @@
             </div>
           </fieldset>
 
+          <div style="margin-top:10px">
+            <label style="display:flex; align-items:flex-start; gap:8px; font-weight:500;">
+              <input id="accept_terms" name="accept_terms" type="checkbox" style="margin-top:3px">
+              <span>He leído y acepto las <a href="index.php?page=terms" target="_blank" rel="noopener">Condiciones de Uso</a>.</span>
+            </label>
+          </div>
+
           <div id="form-msg" aria-live="polite"></div>
 
           <div class="actions">
-            <button id="submit-btn" class="btn" type="submit">Registrar y empezar</button>
+            <button id="submit-btn" class="btn" type="submit" disabled>Registrar y empezar</button>
           </div>
         </form>
       </div>
@@ -369,6 +376,7 @@
     const form = document.getElementById('register-form');
     const msg  = document.getElementById('form-msg');
     const btn  = document.getElementById('submit-btn');
+    const chk  = document.getElementById('accept_terms');
 
     const companyBox = document.getElementById('company-box');
     const personBox  = document.getElementById('person-box');
@@ -404,6 +412,11 @@
 
     async function onSubmit(e){
       e.preventDefault();
+
+      // Condiciones de uso obligatorias
+      if (!chk.checked) {
+        return showError('Debes aceptar las Condiciones de Uso para continuar.');
+      }
 
       // NIF limpio
       if (form.nif) form.nif.value = (form.nif.value||'').replace(/[\s-]/g,'').toUpperCase();
@@ -461,8 +474,11 @@
     }
 
     form.addEventListener('submit', onSubmit);
+    // Habilita/deshabilita botón según casilla
+    const toggleBtn = () => { btn.disabled = !chk.checked; }
+    chk.addEventListener('change', toggleBtn);
+    toggleBtn();
   })();
   </script>
 </body>
 </html>
-

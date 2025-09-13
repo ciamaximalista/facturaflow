@@ -133,6 +133,9 @@ $settings = file_exists($settingsFile) ? json_decode(file_get_contents($settings
         
         <div class="sidebar-footer">
             <div style="font-size:10px; margin-top: .75rem;">
+                <div style="margin-bottom:.5rem;">
+                  <a href="index.php?page=terms" style="font-size:11px; color:#2563eb; text-decoration:none;">Condiciones de Uso</a>
+                </div>
                 <div style="opacity:.7; margin-bottom:.35rem;">FacturaFlow es resultado de la cooperación de</div>
                 <img src="aliados.png" alt="Aliados" style="max-width:100%; height:auto; display:block;" />
             </div>

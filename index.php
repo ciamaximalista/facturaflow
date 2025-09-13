@@ -29,6 +29,15 @@ session_start();
 // ----------------- AUTENTICACIÓN: HANDLERS TEMPRANOS -----------------
 $auth = new AuthManager();
 
+// ----------------- PÁGINAS PÚBLICAS (antes de registro/login) -----------------
+if (isset($_GET['page'])) {
+    $public = strtolower((string)$_GET['page']);
+    if (in_array($public, ['terms','condiciones','terminos','tos'], true)) {
+        include __DIR__ . '/templates/terms.php';
+        exit;
+    }
+}
+
 function json_response(array $payload, int $code = 200): void {
     while (ob_get_level() > 0) { @ob_end_clean(); }
     http_response_code($code);
@@ -151,6 +160,8 @@ $map = [
     'edit_client' => 'edit_client',  'editar_cliente' => 'edit_client',
     'received' => 'received', 'recibidas' => 'received',
     'received_view' => 'received_view', 'ver_recibida' => 'received_view',
+    // Página pública de condiciones
+    'terms' => 'terms', 'condiciones' => 'terms', 'terminos' => 'terms', 'tos' => 'terms',
 ];
 $page = $map[strtolower((string)$rawPage)] ?? strtolower((string)$rawPage);
 
@@ -1236,6 +1247,11 @@ switch ($page) {
         $clientCount = is_array($clients) ? count($clients) : 0;
 
         include __DIR__ . '/templates/dashboard.php';
+        break;
+    }
+
+    case 'terms': {
+        include __DIR__ . '/templates/terms.php';
         break;
     }
 

@@ -54,6 +54,15 @@ class AuthManager
 	    if ($this->isUserRegistered()) {
 		return ['success' => false, 'message' => 'El usuario ya está registrado.'];
 	    }
+	    // Aceptación de condiciones de uso obligatoria
+	    $accepted = false;
+	    if (isset($data['accept_terms'])) {
+	        $v = strtolower(trim((string)$data['accept_terms']));
+	        $accepted = in_array($v, ['1','true','on','yes','si','sí'], true);
+	    }
+	    if (!$accepted) {
+	        return ['success' => false, 'message' => 'Debes aceptar las Condiciones de Uso para registrarte.'];
+	    }
 	    if (empty($data['nif']) || empty($data['password'])) {
 		return ['success' => false, 'message' => 'El NIF y la contraseña son obligatorios.'];
 	    }
@@ -105,6 +114,11 @@ class AuthManager
 		    'aeatIdSistema'         => '01',
 		    'aeatVersion'           => '1.0.0',
 		    'aeatNumeroInstalacion' => '1',
+		    // Metadatos de aceptación de condiciones
+		    'termsAcceptedAt'       => gmdate('c'),
+		    'termsAcceptedIp'       => $_SERVER['REMOTE_ADDR'] ?? '',
+		    'termsAcceptedUA'       => $_SERVER['HTTP_USER_AGENT'] ?? '',
+		    'termsVersion'          => 'v1.0',
 		];
 
 
@@ -205,4 +219,3 @@ public static function decryptWithKeyFile(string $encrypted, string $keyFilePath
 }
     
 }
-
