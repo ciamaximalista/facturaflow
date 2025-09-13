@@ -171,7 +171,8 @@ final class InvoiceManager {
             $supNode = $xml->addChild('suplidos');
             foreach ($data['suplidos'] as $s) {
                 $amount = self::moneyToFloatEU($s['amount'] ?? $s['value'] ?? 0);
-                if ($amount <= 0) continue;
+                // Acepta tanto positivos (factura normal) como negativos (rectificativa)
+                if ($amount == 0.0) continue;
                 $desc = trim((string)($s['description'] ?? $s['desc'] ?? 'Suplido')) ?: 'Suplido';
                 $sx   = $supNode->addChild('suplido');
                 $sx->addChild('description', htmlspecialchars($desc));
@@ -261,11 +262,26 @@ final class InvoiceManager {
             }
         }
 
+        // Suplidos de la original (si existen) → anular en negativo
+        $suplidos = [];
+        if (isset($original->suplidos->suplido)) {
+            foreach ($original->suplidos->suplido as $s) {
+                $desc = trim((string)($s->description ?? 'Suplido')) ?: 'Suplido';
+                $amt  = (float)($s->amount ?? 0);
+                if ($amt <= 0) continue;
+                $suplidos[] = [
+                    'desc'   => 'Anulación de: ' . $desc,
+                    'amount' => -1 * abs($amt),
+                ];
+            }
+        }
+
         $data = [
             'clientId'        => (string)$original->client->id,
             'series'          => $series,
             'concept'         => 'Rectificación de factura ' . $originalInvoiceId . ($reason ? '. Motivo: '.$reason : ''),
             'items'           => $items,
+            'suplidos'        => $suplidos,
             'irpfRate'        => (float)($original->irpfRate ?? 0),
             'isRectificative' => true,
             'rectifies'       => $originalInvoiceId,

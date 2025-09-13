@@ -126,8 +126,17 @@
 	?>
 	  <tr>
 	    <td><small><?= htmlspecialchars($upAt) ?></small></td>
-	    <td><strong><?= htmlspecialchars($serie . ($serie && $num ? '-' : '') . $num) ?></strong></td>
-	    <td><?= htmlspecialchars(trim(($seller ?: '') . ($sellerNif ? " ({$sellerNif})" : ''))) ?></td>
+	    <td>
+	      <?php $label = trim($serie . ($serie && $num ? '-' : '') . $num); if ($label==='') $label = $id; ?>
+	      <a href="index.php?page=received_view&id=<?= urlencode($id) ?>" title="Ver factura recibida">
+	        <strong><?= htmlspecialchars($label) ?></strong>
+	      </a>
+	    </td>
+	    <td>
+	      <a href="index.php?page=received_view&id=<?= urlencode($id) ?>" title="Ver factura recibida">
+	        <?= htmlspecialchars(trim(($seller ?: '') . ($sellerNif ? " ({$sellerNif})" : ''))) ?>
+	      </a>
+	    </td>
 	    <td><?= htmlspecialchars($concept) ?></td>
 	    <td style="text-align:right;"><?= number_format($amt, 2, ',', '.') ?> €</td>
 	    <td style="text-align:center;">
