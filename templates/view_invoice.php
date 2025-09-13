@@ -257,11 +257,13 @@ $bannerText = match (mb_strtolower($payStatus, 'UTF-8')) {
           $reg = isset($invoice->faceb2b->registrationCode) ? (string)$invoice->faceb2b->registrationCode : '';
         ?>
         <a href="index.php?page=print_invoice&id=<?php echo urlencode((string)$invoice->id); ?>" class="btn">PDF para imprimir</a>
+        <a href="index.php?page=export_facturae&id=<?php echo urlencode((string)$invoice->id); ?>" class="btn">Exportar Factura-e (XSIG)</a>
         <a href="javascript:window.print()" class="btn">Imprimir</a>
         <?php if (!$cancelled): ?>
             <a href="index.php?page=rectify_prompt&id=<?php echo urlencode((string)$invoice->id); ?>" class="btn btn-danger">Rectificar</a>
         <?php endif; ?>
     </div>
+
 
 
 </div>

@@ -623,6 +623,49 @@ final class InvoiceManager {
             $dec = \SecureConfig::decrypt($certPass);
             if (is_string($dec) && $dec !== '') $certPass = $dec;
         }
+        // Fallbacks: si no hay P12 válido en config.json, intenta IssuerCert o plataforma
+        if ($certPath === '' || !is_file($certPath)) {
+            // 1) IssuerCert centralizado
+            try {
+                if (!class_exists('IssuerCert') && is_file(__DIR__ . '/IssuerCert.php')) {
+                    require_once __DIR__ . '/IssuerCert.php';
+                }
+                if (class_exists('IssuerCert')) {
+                    [$p12, $pp] = \IssuerCert::getPathAndPass();
+                    if (is_string($p12) && is_file($p12)) { $certPath = $p12; $certPass = $pp; }
+                }
+            } catch (\Throwable $e) { /* noop */ }
+        }
+        if ($certPath === '' || !is_file($certPath)) {
+            // 2) Plataforma (config_plataforma.json → cifra)
+            try {
+                if (!function_exists('ff_platform_dir') && is_file(__DIR__ . '/helpers.php')) { require_once __DIR__ . '/helpers.php'; }
+                $plat = function_exists('ff_platform_dir') ? \ff_platform_dir() : null;
+                if (is_string($plat) && $plat !== '') {
+                    $p12Try = rtrim($plat, '/').'/max.p12';
+                    if (is_file($p12Try)) {
+                        $certPath = $p12Try;
+                        // pass: intenta en ficheros conocidos o en faceb2b.json
+                        $cands = [ rtrim($plat,'/').'/max.pass', rtrim($plat,'/').'/faceb2b.pass', rtrim($plat,'/').'/p12.pass' ];
+                        foreach ($cands as $pf) {
+                            if (is_file($pf)) { $raw = trim((string)@file_get_contents($pf)); if ($raw !== '') { $certPass = $raw; break; } }
+                        }
+                        if (is_string($certPass) && strncmp($certPass, 'enc:v1:', 7) === 0 && class_exists('SecureConfig')) {
+                            $dec = \SecureConfig::decrypt($certPass); if (is_string($dec) && $dec !== '') $certPass = $dec;
+                        }
+                        $fbCfg = rtrim($plat,'/').'/faceb2b.json';
+                        if (($certPass === '' || $certPass === null) && is_file($fbCfg)) {
+                            $j = json_decode((string)@file_get_contents($fbCfg), true);
+                            if (is_array($j) && !empty($j['p12_pass'])) {
+                                $pp = (string)$j['p12_pass'];
+                                if (strncmp($pp, 'enc:v1:', 7) === 0 && class_exists('SecureConfig')) { $dec = \SecureConfig::decrypt($pp); if (is_string($dec) && $dec !== '') $pp = $dec; }
+                                $certPass = $pp;
+                            }
+                        }
+                    }
+                }
+            } catch (\Throwable $e) { /* noop */ }
+        }
 
         // ---- Cliente: merge del XML con la ficha (para traer DIR3, etc.)
         $cliXml = $inv->client ?? null;
