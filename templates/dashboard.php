@@ -102,7 +102,8 @@ foreach ($emitidas as $inv) {
 
 // Filtros recibidas: proveedor (NIF) + periodo (mes en curso por defecto)
 $rp = $get('rp', 'M0');
-$rs = $get('rs', '');
+$rsRaw = $_GET['rs'] ?? [];
+$rsSel = array_values(array_filter(is_array($rsRaw) ? $rsRaw : ($rsRaw!=='' ? [$rsRaw] : []), fn($v)=> (string)$v !== ''));
 $rs_s = $get('rs_s','');
 $rs_e = $get('rs_e','');
 
@@ -123,11 +124,19 @@ $rs_e = $get('rs_e','');
   }
 })($rp,$rs_s,$rs_e,$nowY);
 
+// Proveedores (desde caché 5 años, con fallback)
 $providers = [];
-foreach ((array)$received as $r) {
-  $nif = strtoupper(trim((string)($r['sellerNif'] ?? $r['supplierNif'] ?? '')));
-  $nam = (string)($r['sellerName'] ?? $r['supplierName'] ?? '');
-  if ($nif !== '') $providers[$nif] = $nam ? ($nam.' ('.$nif.')') : $nif;
+try {
+  if (method_exists($rx, 'getProvidersMap')) {
+    $providers = $rx->getProvidersMap();
+  }
+} catch (\Throwable $e) { $providers = []; }
+if (!$providers) {
+  foreach ((array)$received as $r) {
+    $nif = strtoupper(trim((string)($r['sellerNif'] ?? $r['supplierNif'] ?? '')));
+    $nam = (string)($r['sellerName'] ?? $r['supplierName'] ?? '');
+    if ($nif !== '') $providers[$nif] = $nam ? ($nam.' ('.$nif.')') : $nif;
+  }
 }
 ksort($providers);
 
@@ -136,9 +145,9 @@ foreach ((array)$received as $r) {
   $iss = ymd((string)($r['issueDate'] ?? $r['uploadedAt'] ?? ''));
   if ($startR && $iss && $iss < $startR) continue;
   if ($endR   && $iss && $iss > $endR)   continue;
-  if ($rs !== '') {
+  if (!empty($rsSel)) {
     $nif = strtoupper(trim((string)($r['sellerNif'] ?? $r['supplierNif'] ?? '')));
-    if ($nif !== strtoupper($rs)) continue;
+    if ($nif === '' || !in_array($nif, array_map('strtoupper',$rsSel), true)) continue;
   }
   $recibidas[] = $r;
 }
@@ -436,9 +445,11 @@ $dataR  = array_values($recvBase);
     submitParentForm(btn);
   }); });
   // update badges on change y auto-submit
-  qs(null,'.fd-panel input[type="checkbox"]').forEach(function(cb){ cb.addEventListener('change', function(){ var wrap=cb.closest('.fd-wrap'); if(!wrap) return; var all=qs(wrap,'.fd-panel input[type="checkbox"]').filter(x=>x.checked); var badge=wrap.querySelector('.fd-badge'); if(!badge) return; if(all.length){ badge.style.display='inline-block'; badge.textContent=all.length; } else { badge.style.display='none'; badge.textContent=''; }
+  qs(null,'.fd-panel input[type="checkbox"]').forEach(function(cb){ cb.addEventListener('change', function(){ var wrap=cb.closest('.fd-wrap'); if(!wrap) return; var all=qs(wrap,'.fd-panel input[type="checkbox"]').filter(function(x){return x.checked;}); var badge=wrap.querySelector('.fd-badge'); if(!badge) return; if(all.length){ badge.style.display='inline-block'; badge.textContent=all.length; } else { badge.style.display='none'; badge.textContent=''; }
     submitParentForm(cb);
   }); });
+  // seleccionar todo
+  qs(null,'.fd-select-all').forEach(function(sel){ sel.addEventListener('change', function(){ var list = document.querySelector(sel.getAttribute('data-list')); var name = sel.getAttribute('data-name'); if(!list||!name) return; var cbs = qs(list,'input[type="checkbox"]'); cbs = cbs.filter(function(x){ return x.name===name; }); cbs.forEach(function(cb){ cb.checked = sel.checked; }); var wrap=sel.closest('.fd-wrap'); if(wrap){ var badge=wrap.querySelector('.fd-badge'); if(badge){ var count=cbs.filter(function(x){return x.checked;}).length; if(count){ badge.style.display='inline-block'; badge.textContent=count; } else { badge.style.display='none'; badge.textContent=''; } } } submitParentForm(sel); }); });
 })();
 </script>
 
@@ -451,15 +462,30 @@ $dataR  = array_values($recvBase);
         <tr>
           <th>Factura</th>
           <th>Proveedor
-            <div class="th-filter">
-              <select name="rs" onchange="this.form.submit()">
-                <option value="">Todos</option>
-                <?php foreach ($providers as $nif=>$lab): ?>
-                  <option value="<?php echo htmlspecialchars($nif); ?>" <?php echo ($rs===$nif?'selected':''); ?>>
-                    <?php echo htmlspecialchars($lab); ?>
-                  </option>
-                <?php endforeach; ?>
-              </select>
+            <div class="th-filter fd-wrap">
+              <?php $rsCount = count($rsSel??[]); ?>
+              <button type="button" class="fd-button" data-target="#fd-providers">
+                <span>Filtrar proveedores</span>
+                <span class="fd-badge" <?php echo $rsCount? '':'style="display:none;"'; ?>><?php echo $rsCount; ?></span>
+                <span class="fd-caret">▾</span>
+              </button>
+              <div id="fd-providers" class="fd-panel">
+                <div class="fd-search">
+                  <input type="text" placeholder="Buscar…" data-filter-list="#fd-providers-list">
+                </div>
+                <div id="fd-providers-list" class="fd-list">
+                  <?php foreach ($providers as $nif=>$lab): ?>
+                    <label class="fd-check" data-text="<?php echo htmlspecialchars(mb_strtolower($lab.' '.$nif)); ?>">
+                      <input type="checkbox" name="rs[]" value="<?php echo htmlspecialchars($nif); ?>" <?php echo (in_array($nif, $rsSel??[], true)?'checked':''); ?>>
+                      <?php echo htmlspecialchars($lab); ?>
+                    </label>
+                  <?php endforeach; ?>
+                </div>
+                <div class="fd-actions">
+                  <button type="button" class="btn btn-sm fd-clear" data-clear="rs[]">Limpiar</button>
+                  <button class="btn btn-sm" type="submit">Aplicar</button>
+                </div>
+              </div>
             </div>
           </th>
           <th>Periodo

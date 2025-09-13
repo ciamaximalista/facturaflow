@@ -103,7 +103,7 @@ if (!function_exists('resolveClientDire')) {
     }
 }
 
- function auth_is_authenticated($auth): bool {
+function auth_is_authenticated($auth): bool {
     if (is_object($auth) && method_exists($auth, 'isAuthenticated')) {
         return (bool)$auth->isAuthenticated();
     }
@@ -394,6 +394,50 @@ function find_facturae_xml(string $lookup, ?string $dataBase = null): ?string {
 }
 
 
+// ==== Plataforma externa (carpeta "cifra") ====
+if (!function_exists('ff_app_root_dir')) {
+    function ff_app_root_dir(): string {
+        $cands = [
+            dirname(__DIR__),            // …/repoblacion
+            __DIR__,                     // …/repoblacion/src
+            dirname(__DIR__, 2),         // subir más por seguridad
+        ];
+        foreach ($cands as $d) {
+            if (is_file($d . '/index.php')) return $d;
+        }
+        // Búsqueda hacia arriba hasta 5 niveles
+        $base = __DIR__;
+        for ($i=0; $i<5; $i++) {
+            if (is_file($base . '/index.php')) return $base;
+            $base = dirname($base);
+        }
+        return dirname(__DIR__);
+    }
+}
+
+if (!function_exists('ff_platform_dir')) {
+    function ff_platform_dir(): ?string {
+        $root = ff_app_root_dir();
+        $cfgPath = $root . '/config_plataforma.json';
+        if (is_file($cfgPath)) {
+            $j = json_decode((string)@file_get_contents($cfgPath), true);
+            if (is_array($j)) {
+                $rel = (string)($j['cifra_dir'] ?? '');
+                if ($rel !== '') {
+                    $abs = realpath($root . '/' . $rel);
+                    if ($abs && is_dir($abs)) return $abs;
+                    $abs2 = rtrim($root . '/' . $rel, '/');
+                    if (is_dir($abs2)) return $abs2;
+                }
+            }
+        }
+        // Fallbacks conocidos
+        if (is_dir('/var/www/cifra')) return '/var/www/cifra';
+        if (is_dir('/var/www/html/cifra')) return '/var/www/html/cifra';
+        return null;
+    }
+}
+
 /**
  * Sube/actualiza el certificado del emisor y/o su contraseña.
  * - Si viene fichero en $_FILES['certificate'] => se guarda SIEMPRE como data/certs/issuer.cert
@@ -455,4 +499,3 @@ function ff_handle_issuer_cert_upload(array $files, array $post): array {
 
 
 }
-

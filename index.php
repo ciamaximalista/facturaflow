@@ -528,7 +528,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 // Sincroniza estado de facturas enviadas a FACe a partir del número de registro
                 $oneId = trim((string)($_POST['id'] ?? $_POST['invoice_id'] ?? ''));
                 $im = new InvoiceManager();
-                // Carga config opcional para Face Providers (data/face.json o /var/www/html/cifra/face.json)
+                // Carga config opcional para Face Providers (data/face.json o <cifra>/face.json)
                 if (!class_exists('FaceProvidersClient')) {
                     @require_once __DIR__ . '/src/FaceProvidersClient.php';
                 }
@@ -683,7 +683,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $fb      = (array)($cfg['faceb2b'] ?? []);
 
                 // Campos admin-only preservados
-                $lockedP12Path = $fb['p12_path'] ?? '/var/www/html/cifra/max.p12';
+                if (!function_exists('ff_platform_dir')) { @require_once __DIR__ . '/src/helpers.php'; }
+                $platDir = function_exists('ff_platform_dir') ? ff_platform_dir() : null;
+                $lockedP12Path = $fb['p12_path'] ?? ($platDir ? ($platDir . '/max.p12') : '/var/www/html/cifra/max.p12');
                 $lockedP12Pass = $fb['p12_pass'] ?? null;
 
                 // Campos de texto/número permitidos

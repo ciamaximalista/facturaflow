@@ -13,6 +13,7 @@ final class ReceivedManager
 {
     private string $receivedDir;
     private string $indexFile;
+    private string $providersFile;
     /** @var array<string,mixed> */
     private array $config;
 
@@ -21,6 +22,7 @@ final class ReceivedManager
         $baseData = realpath(__DIR__ . '/../data') ?: (__DIR__ . '/../data');
         $this->receivedDir = $receivedDir ?: ($baseData . '/received');
         $this->indexFile   = $this->receivedDir . '/index.json';
+        $this->providersFile = dirname($this->receivedDir) . '/providers_last5y.json';
 
         ensure_dir($this->receivedDir);
         $this->config = read_config(__DIR__ . '/../data/config.json');
@@ -269,6 +271,9 @@ final class ReceivedManager
         $index['updatedAt'] = date('c');
         save_json($this->indexFile, $index);
 
+        // 9) Refrescar caché de proveedores (últimos 5 años)
+        try { $this->refreshProvidersCache(); } catch (\Throwable $e) { /* noop */ }
+
         return [
             'success'     => true,
             'added_ids'   => $added,
@@ -277,6 +282,96 @@ final class ReceivedManager
             'refreshed'   => true,
         ];
     }
+
+    /** Recalcula y guarda el archivo de proveedores de los últimos 5 años (NIF => Nombre). */
+    public function refreshProvidersCache(): void
+    {
+        $index = load_json($this->indexFile);
+        $items = (array)($index['items'] ?? []);
+        $map   = [];
+        $threshold = strtotime('-5 years');
+        foreach ($items as $it) {
+            $nif = strtoupper(trim((string)($it['supplierNif'] ?? $it['sellerNif'] ?? '')));
+            if ($nif === '') continue;
+            $name = trim((string)($it['supplierName'] ?? $it['sellerName'] ?? ''));
+            $dt   = (string)($it['issueDate'] ?? $it['uploadedAt'] ?? '');
+            $ts   = $dt !== '' ? (strtotime($dt) ?: 0) : 0;
+            if ($ts > 0 && $ts < $threshold) continue;
+            if (!isset($map[$nif])) $map[$nif] = $name !== '' ? $name : $nif;
+        }
+        $provFile = dirname($this->receivedDir) . '/providers_last5y.json';
+        if (!is_dir(dirname($provFile))) @mkdir(dirname($provFile), 0775, true);
+        save_json($provFile, ['updatedAt'=>date('c'),'providers'=>$map]);
+    }
+
+    /** Devuelve el mapa de proveedores (NIF=>Nombre). Si no existe, lo crea. */
+    public function getProvidersMap(): array
+    {
+        $provFile = dirname($this->receivedDir) . '/providers_last5y.json';
+        if (!is_file($provFile)) {
+            $this->refreshProvidersCache();
+        }
+        $data = load_json($provFile);
+        return (array)($data['providers'] ?? []);
+    }
+
+    /** Guarda recibida subida manualmente y actualiza índice + proveedores. */
+    public function saveUploaded(?array $file): array
+    {
+        if (!$file || !isset($file['tmp_name']) || ($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            return ['success'=>false,'message'=>'Archivo inválido'];
+        }
+        $tmp  = (string)$file['tmp_name'];
+        $name = basename((string)($file['name'] ?? 'recibida.xml'));
+        $safe = preg_replace('/[^A-Za-z0-9._-]+/','_', $name);
+        if ($safe === '' || stripos($safe, '.xml') === false) $safe .= '.xml';
+
+        $xml = (string)@file_get_contents($tmp);
+        if ($xml === '') return ['success'=>false,'message'=>'No se pudo leer el archivo'];
+
+        $meta = $this->extractMetaFromFacturae($xml);
+        $series = (string)($meta['series'] ?? '');
+        $number = (string)($meta['number'] ?? '');
+        $issue  = (string)($meta['issueDate'] ?? '');
+        $supplierNif  = strtoupper(preg_replace('/[\s-]+/','', (string)($meta['supplierNif'] ?? '')));
+        $supplierName = (string)($meta['supplierName'] ?? '');
+        $buyerNif     = strtoupper(preg_replace('/[\s-]+/','', (string)($meta['buyerNif'] ?? '')));
+        $concept      = (string)($meta['concept'] ?? '');
+        $totalAmount  = isset($meta['totalAmount']) ? (float)$meta['totalAmount'] : 0.0;
+
+        $id = 'local_' . substr(sha1($supplierNif.'|'.$series.'|'.$number.'|'.($issue ?: microtime(true))), 0, 12);
+        $fileName = ($series && $number ? ($series.'-'.$number.'_') : '') . $id . '.xml';
+        $dest = $this->receivedDir . '/' . $fileName;
+        @move_uploaded_file($tmp, $dest);
+        if (!is_file($dest)) { @file_put_contents($dest, $xml); }
+        if (!is_file($dest)) return ['success'=>false,'message'=>'No se pudo guardar el archivo'];
+
+        $index = load_json($this->indexFile);
+        if (!isset($index['items']) || !is_array($index['items'])) $index['items'] = [];
+        $index['items'][] = [
+            'external_id' => $id,
+            'series'      => $series ?: null,
+            'number'      => $number ?: null,
+            'issueDate'   => $issue ?: null,
+            'supplierNif' => $supplierNif ?: null,
+            'supplierName'=> $supplierName ?: null,
+            'buyerNif'    => $buyerNif ?: null,
+            'totalAmount' => $totalAmount,
+            'concept'     => $concept ?: null,
+            'file'        => $fileName,
+            'uploadedAt'  => date('c'),
+            'status'      => 'Pendiente',
+            'validated'   => 'local-upload'
+        ];
+        $index['updatedAt'] = date('c');
+        save_json($this->indexFile, $index);
+
+        try { $this->refreshProvidersCache(); } catch (\Throwable $e) { /* noop */ }
+
+        return ['success'=>true, 'id'=>$id];
+    }
+
+    
 
     /** Lista recibidas desde índice local, ocultando las que resulten ser emitidas por nosotros. */
     public function listAll(): array

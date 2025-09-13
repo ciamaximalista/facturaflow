@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use josemmo\Facturae\FacturaeFile;
 use josemmo\Facturae\Face\Faceb2bClient as JosemmoFaceb2bClient;
+if (!function_exists('ff_platform_dir')) { @require_once __DIR__ . '/helpers.php'; }
 
 final class FaceB2BClient {
     /** @var array<string,mixed> */
@@ -497,8 +498,8 @@ final class FaceB2BClient {
 
     /** Construye un cliente nuevo con C14N exclusiva según parámetro. */
     private function buildClient(bool $exclusiveC14n): JosemmoFaceb2bClient {
-        // Fuente global (compartida) en /var/www/html/cifra/faceb2b.json
-        $globalCfgPath = '/var/www/html/cifra/faceb2b.json';
+        $plat = function_exists('ff_platform_dir') ? ff_platform_dir() : null;
+        $globalCfgPath = ($plat ? ($plat . '/faceb2b.json') : '/var/www/html/cifra/faceb2b.json');
         if (is_file($globalCfgPath)) {
             $gj = json_decode((string)@file_get_contents($globalCfgPath), true);
             if (is_array($gj)) {
@@ -522,21 +523,22 @@ final class FaceB2BClient {
         $p12Path = (string)($this->cfg['p12_path'] ?? '');
         $p12Pass = (string)($this->cfg['p12_pass'] ?? '');
         if ($p12Pass !== '' && strncmp($p12Pass, 'enc:v1:', 7) === 0) {
-            // Descifra con clave global primero (/var/www/html/cifra/secret.key), luego local data/secret.key o SecureConfig
+            // Descifra con clave global primero (…/cifra/secret.key), luego local data/secret.key o SecureConfig
             $dec = $this->tryCompatLocalDecrypt($p12Pass);
             if (($dec === '' || $dec === null) && class_exists('SecureConfig')) $dec = \SecureConfig::decrypt($p12Pass);
             if (is_string($dec) && $dec !== '') $p12Pass = $dec;
         }
         // Forzar p12 de plataforma si existe
-        if (is_file('/var/www/html/cifra/max.p12')) {
-            $p12Path = '/var/www/html/cifra/max.p12';
+        $platP12 = $plat ? ($plat . '/max.p12') : '/var/www/html/cifra/max.p12';
+        if (is_file($platP12)) {
+            $p12Path = $platP12;
         }
         // Si no tenemos pass aún, intenta localizarlo en ficheros conocidos
         if ($p12Pass === '') {
             $passFiles = [
-                '/var/www/html/cifra/max.pass',
-                '/var/www/html/cifra/faceb2b.pass',
-                '/var/www/html/cifra/p12.pass',
+                $plat ? ($plat . '/max.pass')     : '/var/www/html/cifra/max.pass',
+                $plat ? ($plat . '/faceb2b.pass') : '/var/www/html/cifra/faceb2b.pass',
+                $plat ? ($plat . '/p12.pass')     : '/var/www/html/cifra/p12.pass',
                 __DIR__ . '/../data/faceb2b.pass',
             ];
             foreach ($passFiles as $pf) {
@@ -557,7 +559,7 @@ final class FaceB2BClient {
         }
         if ($p12Pass === '') {
             // Evita intentar firmar SOAP sin pass: da FS001. Mensaje claro para el usuario.
-            throw new \RuntimeException('Falta la contraseña del P12 de plataforma para FACeB2B. Define "p12_pass" en config o coloca /var/www/html/cifra/max.pass');
+            throw new \RuntimeException('Falta la contraseña del P12 de plataforma para FACeB2B. Define "p12_pass" en config o coloca ' . ($plat ? ($plat . '/max.pass') : '/var/www/html/cifra/max.pass'));
         }
         $this->log('client_init', ['p12'=> $p12Path, 'pass_len'=>strlen((string)$p12Pass), 'exc_c14n'=>$exclusiveC14n?1:0]);
         $cli = new JosemmoFaceb2bClient($p12Path, null, $p12Pass);
@@ -583,11 +585,16 @@ final class FaceB2BClient {
         $iv  = substr($raw, 0, 16);
         $ct  = substr($raw, 16);
 
-        $candidates = [
-            '/var/www/html/cifra/key.secret',
-            '/var/www/html/cifra/secret.key',
-            __DIR__ . '/../data/secret.key',
-        ];
+        $plat = function_exists('ff_platform_dir') ? ff_platform_dir() : null;
+        $candidates = [];
+        if ($plat) {
+            $candidates[] = rtrim($plat,'/') . '/key.secret';
+            $candidates[] = rtrim($plat,'/') . '/secret.key';
+        } else {
+            $candidates[] = '/var/www/html/cifra/key.secret';
+            $candidates[] = '/var/www/html/cifra/secret.key';
+        }
+        $candidates[] = __DIR__ . '/../data/secret.key';
         foreach ($candidates as $kfile) {
             if (!is_file($kfile)) continue;
             $k = (string)@file_get_contents($kfile);
@@ -626,7 +633,8 @@ final class FaceB2BClient {
     /** Mezcla configuración REST/SOAP desde ubicaciones estándar si están disponibles */
     private function mergeExternalConfig(): void {
         // Global
-        $globalCfgPath = '/var/www/html/cifra/faceb2b.json';
+        $plat = function_exists('ff_platform_dir') ? ff_platform_dir() : null;
+        $globalCfgPath = ($plat ? ($plat . '/faceb2b.json') : '/var/www/html/cifra/faceb2b.json');
         if (is_file($globalCfgPath)) {
             $gj = json_decode((string)@file_get_contents($globalCfgPath), true);
             if (is_array($gj)) {
@@ -648,8 +656,9 @@ final class FaceB2BClient {
             }
         }
         // Defaults
-        if (empty($this->cfg['p12_path']) && is_file('/var/www/html/cifra/max.p12')) {
-            $this->cfg['p12_path'] = '/var/www/html/cifra/max.p12';
+        if (empty($this->cfg['p12_path'])) {
+            $platP12 = $plat ? ($plat . '/max.p12') : '/var/www/html/cifra/max.p12';
+            if (is_file($platP12)) $this->cfg['p12_path'] = $platP12;
         }
     }
 }

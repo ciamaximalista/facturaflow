@@ -5,10 +5,25 @@ declare(strict_types=1);
 final class SecureConfig
 {
     /**
-     * Devuelve la ruta al fichero de clave LOCAL del usuario.
+     * Devuelve la ruta al fichero de clave (prioriza plataforma/cifra si existe).
      */
     private static function getLocalKeyPath(): string
     {
+        // Intentar plataforma (config_plataforma.json)
+        $plat = null;
+        $helpers = __DIR__ . '/helpers.php';
+        if (is_file($helpers)) { @require_once $helpers; }
+        if (function_exists('ff_platform_dir')) {
+            $plat = \ff_platform_dir();
+        }
+        if (is_string($plat) && $plat !== '') {
+            $pf = rtrim($plat, '/');
+            foreach (['/secret.key','/key.secret'] as $suf) {
+                $cand = $pf . $suf;
+                if (is_file($cand) && is_readable($cand)) return $cand;
+            }
+        }
+        // Fallback: clave local de la instalación
         return __DIR__ . '/../data/secret.key';
     }
 

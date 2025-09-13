@@ -24,10 +24,9 @@ final class IssuerCert
     /** Ruta absoluta al fichero de contraseña (opcional) */
     public const PASS_PATH = __DIR__ . '/../data/certs/issuer.pass';
     /** Posibles configs JSON a consultar (por compat) */
-    private const CFG_FILES = [
+    private const CFG_FILES_LEGACY = [
         __DIR__ . '/../data/config.json',
         __DIR__ . '/../data/local.config.json',
-        '/var/www/html/cifra/faceb2b.json', // compat histórico
     ];
 
     /** Log del generador (mantenemos el mismo usado por tu app) */
@@ -55,8 +54,12 @@ final class IssuerCert
 
     /** Prioriza certificatePath de config.json; si no, fallback a rutas conocidas. */
     private static function resolvePath(): string {
-        // 1) Configs declaradas
-        foreach (self::CFG_FILES as $cfg) {
+        // 1) Configs declaradas (incluyendo plataforma si existe)
+        $cfgFiles = self::CFG_FILES_LEGACY;
+        if (!function_exists('ff_platform_dir')) { @require_once __DIR__ . '/helpers.php'; }
+        $plat = function_exists('ff_platform_dir') ? ff_platform_dir() : null;
+        if ($plat && is_file($plat . '/faceb2b.json')) $cfgFiles[] = $plat . '/faceb2b.json';
+        foreach ($cfgFiles as $cfg) {
             if (!is_file($cfg)) continue;
             $j = json_decode((string)@file_get_contents($cfg), true);
             if (!is_array($j)) continue;
@@ -280,4 +283,3 @@ final class IssuerCert
         @file_put_contents(self::GEN_LOG, $line . "\n", FILE_APPEND);
     }
 }
-

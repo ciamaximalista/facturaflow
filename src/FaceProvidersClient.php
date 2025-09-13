@@ -7,6 +7,8 @@ declare(strict_types=1);
  * - Endpoints usados: GET /v1/invoices/{registryCode}
  */
 
+if (!function_exists('ff_platform_dir')) { @require_once __DIR__ . '/helpers.php'; }
+
 final class FaceProvidersClient {
     /** @var array<string,mixed> */
     private array $cfg;
@@ -65,7 +67,8 @@ final class FaceProvidersClient {
         $this->mergeExternalConfig();
         $p12 = (string)($this->cfg['p12_path'] ?? '');
         $pass = (string)($this->cfg['p12_pass'] ?? '');
-        if ($p12 === '' && is_file('/var/www/html/cifra/max.p12')) $p12 = '/var/www/html/cifra/max.p12';
+        $plat = function_exists('ff_platform_dir') ? ff_platform_dir() : null;
+        if ($p12 === '' && $plat && is_file($plat . '/max.p12')) $p12 = $plat . '/max.p12';
         if ($p12 === '' || !is_file($p12)) return '';
         if ($pass !== '' && strncmp($pass, 'enc:v1:', 7) === 0 && class_exists('SecureConfig')) {
             $dec = \SecureConfig::decrypt($pass); if (is_string($dec) && $dec !== '') $pass = $dec;
@@ -108,10 +111,11 @@ final class FaceProvidersClient {
 
     /**
      * Mezcla configuración desde ubicaciones estándar si están disponibles.
-     * Admite: /var/www/html/cifra/face.json y data/face.json
+     * Admite: <cifra>/face.json y data/face.json
      */
     private function mergeExternalConfig(): void {
-        $globalCfgPath = '/var/www/html/cifra/face.json';
+        $plat = function_exists('ff_platform_dir') ? ff_platform_dir() : null;
+        $globalCfgPath = $plat ? ($plat . '/face.json') : '/var/www/html/cifra/face.json';
         if (is_file($globalCfgPath)) {
             $gj = json_decode((string)@file_get_contents($globalCfgPath), true);
             if (is_array($gj)) {
@@ -129,12 +133,11 @@ final class FaceProvidersClient {
                 }
             }
         }
-        if (empty($this->cfg['p12_path']) && is_file('/var/www/html/cifra/max.p12')) {
-            $this->cfg['p12_path'] = '/var/www/html/cifra/max.p12';
+        if (empty($this->cfg['p12_path']) && $plat && is_file($plat . '/max.p12')) {
+            $this->cfg['p12_path'] = $plat . '/max.p12';
         }
         if (empty($this->cfg['rest_base'])) {
             $this->cfg['rest_base'] = 'https://api.face.gob.es/providers';
         }
     }
 }
-

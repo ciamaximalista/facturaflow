@@ -16,10 +16,14 @@
   <div class="right">
     <form id="upload-form" class="inline" method="post" enctype="multipart/form-data" action="index.php">
       <input type="hidden" name="action" value="upload_received">
-      <label class="file">
-        <input type="file" name="receivedFile" required>
-      </label>
-      <button class="btn btn-primary" type="submit">Agregar factura recibida por otros medios</button>
+
+      <div class="file-uploader" id="rx-file-uploader">
+        <input type="file" id="receivedFile" name="receivedFile" required hidden>
+        <button type="button" id="pickFileBtn" class="btn file-btn">📄 Seleccionar archivo</button>
+        <span id="pickedFileName" class="file-name">Ningún archivo seleccionado</span>
+      </div>
+
+      <button class="btn btn-primary" type="submit">Subir factura recibida</button>
     </form>
   </div>
 </div>
@@ -185,6 +189,13 @@
 .btn:hover{ background:#dbeeff; }
 .btn-primary{ background:#0b74c4; border-color:#0b74c4; color:#fff; }
 .btn-primary:hover{ opacity:.95; }
+
+/* Uploader bonito */
+.file-uploader{ display:flex; align-items:center; gap:.6rem; flex-wrap:wrap; margin-right:.4rem; }
+.file-btn{ background:#10b981; border-color:#10b981; color:#fff; }
+.file-btn:hover{ opacity:.95; }
+.file-name{ font-size:.9rem; color:#374151; opacity:.9; max-width:360px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.file-uploader.dragover .file-btn{ box-shadow:0 0 0 3px rgba(16,185,129,.25); }
 </style>
 
 <script>
@@ -202,6 +213,27 @@ document.getElementById('upload-form')?.addEventListener('submit', async (e) => 
     alert(String(err.message || err));
   }
 });
+
+// UI del selector de archivo (bonito)
+(function(){
+  const pickBtn = document.getElementById('pickFileBtn');
+  const input   = document.getElementById('receivedFile');
+  const nameEl  = document.getElementById('pickedFileName');
+  const wrap    = document.getElementById('rx-file-uploader');
+  if (!pickBtn || !input || !nameEl || !wrap) return;
+  pickBtn.addEventListener('click', () => input.click());
+  input.addEventListener('change', () => {
+    const f = input.files && input.files[0];
+    nameEl.textContent = f ? f.name : 'Ningún archivo seleccionado';
+  });
+  // Drag & drop sobre el wrapper
+  ;['dragenter','dragover'].forEach(ev=>wrap.addEventListener(ev, (e)=>{ e.preventDefault(); e.stopPropagation(); wrap.classList.add('dragover'); }));
+  ;['dragleave','drop'].forEach(ev=>wrap.addEventListener(ev, (e)=>{ e.preventDefault(); e.stopPropagation(); wrap.classList.remove('dragover'); }));
+  wrap.addEventListener('drop', (e)=>{
+    const dt = e.dataTransfer; if (!dt || !dt.files || dt.files.length===0) return;
+    input.files = dt.files; const f = input.files[0]; nameEl.textContent = f ? f.name : 'Ningún archivo seleccionado';
+  });
+})();
 </script>
 <script>
 (function () {
