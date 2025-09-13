@@ -1220,6 +1220,13 @@ switch ($page) {
         $im = new InvoiceManager();
         $invoices = $im->getAllInvoices();
 
+        // Backfill de metadatos en índice (rellena NIF/nombre/fecha) y refresco de proveedores al entrar al panel
+        try {
+            $rm = new ReceivedManager();
+            if (method_exists($rm, 'backfillIndexMeta')) { $rm->backfillIndexMeta(); }
+            $rm->refreshProvidersCache();
+        } catch (\Throwable $e) { /* noop */ }
+
         $usable = [];
         foreach ($invoices as $inv) {
             if (isset($inv->isCancelled) && strtolower((string)$inv->isCancelled) === 'true') {
@@ -1408,7 +1415,10 @@ switch ($page) {
 
     case 'received': {
         $rm = new ReceivedManager();
+        try { if (method_exists($rm, 'backfillIndexMeta')) { $rm->backfillIndexMeta(); } } catch (\Throwable $e) {}
+        try { $rm->refreshProvidersCache(); } catch (\Throwable $e) {}
         $received = $rm->listAll();
+        $providers = $rm->getProvidersMap();
         if (!empty($_GET['download_zip'])) {
             $zipPath = $rm->buildZipOfReceived();
             if (is_file($zipPath)) {

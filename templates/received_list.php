@@ -30,12 +30,39 @@
 
 <div class="card">
   <?php
+    // Cargar mapa de proveedores para filtro (NIF => Nombre)
+    if (!isset($providers) || !is_array($providers)) {
+        try { $providers = (new \ReceivedManager())->getProvidersMap(); }
+        catch (\Throwable $e) { $providers = []; }
+    }
+    $providers = is_array($providers) ? $providers : [];
+    ksort($providers);
+    $selectedProv = strtoupper(trim((string)($_GET['prov'] ?? '')));
+  ?>
+
+  <form method="get" action="index.php" class="inline" style="margin: 0 0 .6rem 0; gap:.6rem; align-items:center; flex-wrap:wrap;">
+    <input type="hidden" name="page" value="received">
+    <label for="prov" style="font-weight:600;">Proveedor:</label>
+    <select id="prov" name="prov" onchange="this.form.submit()" style="min-width:260px; padding:.35rem .5rem; border:1px solid #d1d5db; border-radius:.4rem;">
+      <option value="">— Todos —</option>
+      <?php foreach ($providers as $nif=>$name): ?>
+        <option value="<?= htmlspecialchars($nif) ?>" <?= ($selectedProv===$nif?'selected':'') ?>><?= htmlspecialchars(($name?:$nif).' ('.$nif.')') ?></option>
+      <?php endforeach; ?>
+    </select>
+  </form>
+  <?php
     // Paginación: 16 elementos por página
     $perPage = 16;
     $pageParam = 'p';
     $currPage = max(1, (int)($_GET[$pageParam] ?? 1));
     $all = is_array($received) ? $received : (is_iterable($received) ? iterator_to_array($received) : []);
     $all = array_values($all);
+    if ($selectedProv !== '') {
+        $all = array_values(array_filter($all, function($r) use ($selectedProv){
+            $n = strtoupper(trim((string)($r['supplierNif'] ?? $r['sellerNif'] ?? '')));
+            return $n !== '' && $n === $selectedProv;
+        }));
+    }
     $total = count($all);
     $totalPages = max(1, (int)ceil($total / $perPage));
     if ($currPage > $totalPages) { $currPage = $totalPages; }

@@ -123,6 +123,15 @@ class AuthManager
 
 
 	    if (file_put_contents($this->configFile, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE))) {
+		// Crear índices iniciales vacíos relacionados con recibidas (proveedores)
+		try {
+		    $baseData = realpath(__DIR__ . '/../data') ?: (__DIR__ . '/../data');
+		    if (!is_dir($baseData)) @mkdir($baseData, 0775, true);
+		    $provFile = $baseData . '/providers_last5y.json';
+		    if (!is_file($provFile)) {
+		        @file_put_contents($provFile, json_encode(['updatedAt'=>date('c'),'providers'=>new \stdClass()], JSON_UNESCAPED_UNICODE));
+		    }
+		} catch (\Throwable $e) { /* noop */ }
 		return ['success' => true];
 	    }
 

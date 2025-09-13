@@ -124,21 +124,55 @@ $rs_e = $get('rs_e','');
   }
 })($rp,$rs_s,$rs_e,$nowY);
 
-// Proveedores (desde caché 5 años, con fallback)
+// Proveedores (desde caché 5 años + completar con nombres sin NIF desde recibidas)
 $providers = [];
 try {
+  if (method_exists($rx, 'refreshProvidersCache')) { $rx->refreshProvidersCache(); }
   if (method_exists($rx, 'getProvidersMap')) {
-    $providers = $rx->getProvidersMap();
+    $providers = $rx->getProvidersMap(); // NIF => Nombre
   }
 } catch (\Throwable $e) { $providers = []; }
-if (!$providers) {
-  foreach ((array)$received as $r) {
-    $nif = strtoupper(trim((string)($r['sellerNif'] ?? $r['supplierNif'] ?? '')));
-    $nam = (string)($r['sellerName'] ?? $r['supplierName'] ?? '');
-    if ($nif !== '') $providers[$nif] = $nam ? ($nam.' ('.$nif.')') : $nif;
+
+// Extiende con proveedores sin NIF usando clave especial name:<hash>
+$extraNames = [];
+foreach ((array)$received as $r) {
+  $nif = strtoupper(trim((string)($r['sellerNif'] ?? $r['supplierNif'] ?? '')));
+  $nam = trim((string)($r['sellerName'] ?? $r['supplierName'] ?? ''));
+  if ($nif !== '') {
+    if (!isset($providers[$nif])) $providers[$nif] = $nam !== '' ? $nam : $nif;
+  } elseif ($nam !== '') {
+    $key = 'name:' . substr(sha1(mb_strtolower($nam)), 0, 12);
+    if (!isset($extraNames[$key])) $extraNames[$key] = $nam;
   }
 }
-ksort($providers);
+// Mezcla nombres extra al final (solo si aún no hay proveedores con NIF)
+if ($extraNames) {
+  foreach ($extraNames as $k=>$v) { if (!isset($providers[$k])) $providers[$k] = $v; }
+}
+// Fallback duro: si sigue vacío, leer directamente data/received/index.json
+if (!$providers) {
+  try {
+    $rxIndex = __DIR__ . '/../data/received/index.json';
+    if (is_file($rxIndex)) {
+      $raw = file_get_contents($rxIndex);
+      $json = json_decode($raw, true);
+      if (is_array($json) && !empty($json['items'])) {
+        foreach ((array)$json['items'] as $it) {
+          $nif = strtoupper(trim((string)($it['supplierNif'] ?? $it['sellerNif'] ?? '')));
+          $nam = trim((string)($it['supplierName'] ?? $it['sellerName'] ?? ''));
+          if ($nif !== '') {
+            if (!isset($providers[$nif])) $providers[$nif] = $nam !== '' ? $nam : $nif;
+          } elseif ($nam !== '') {
+            $key = 'name:' . substr(sha1(mb_strtolower($nam)), 0, 12);
+            if (!isset($providers[$key])) $providers[$key] = $nam;
+          }
+        }
+      }
+    }
+  } catch (\Throwable $e) { /* noop */ }
+}
+// Ordena por etiqueta mostrada
+uasort($providers, function($a,$b){ return strcmp(mb_strtolower((string)$a), mb_strtolower((string)$b)); });
 
 $recibidas = [];
 foreach ((array)$received as $r) {
@@ -147,7 +181,17 @@ foreach ((array)$received as $r) {
   if ($endR   && $iss && $iss > $endR)   continue;
   if (!empty($rsSel)) {
     $nif = strtoupper(trim((string)($r['sellerNif'] ?? $r['supplierNif'] ?? '')));
-    if ($nif === '' || !in_array($nif, array_map('strtoupper',$rsSel), true)) continue;
+    $nam = trim((string)($r['sellerName'] ?? $r['supplierName'] ?? ''));
+    $match = false;
+    foreach ((array)$rsSel as $sel) {
+      if (strncmp((string)$sel, 'name:', 5) === 0) {
+        // Coincidir por nombre cuando no hay NIF
+        if ($nam !== '' && substr($sel, 5) === substr(sha1(mb_strtolower($nam)), 0, 12)) { $match = true; break; }
+      } else {
+        if ($nif !== '' && strtoupper((string)$sel) === $nif) { $match = true; break; }
+      }
+    }
+    if (!$match) continue;
   }
   $recibidas[] = $r;
 }
@@ -432,24 +476,46 @@ $dataR  = array_values($recvBase);
 <script>
 (function(){
   function qs(a,sel){return Array.prototype.slice.call((a||document).querySelectorAll(sel));}
-  function togglePanel(btn){ var id=btn.getAttribute('data-target'); var p=document.querySelector(id); if(!p) return; var open=p.classList.contains('open'); closeAll(); if(!open){ p.classList.add('open'); } }
-  function closeAll(){ qs(null,'.fd-panel.open').forEach(p=>p.classList.remove('open')); }
-  qs(null,'.fd-button').forEach(function(btn){ btn.addEventListener('click', function(e){ e.stopPropagation(); togglePanel(btn); }); });
-  document.addEventListener('click', closeAll);
-  // live filter
-  qs(null,'.fd-search input').forEach(function(inp){ inp.addEventListener('input', function(){ var list=document.querySelector(inp.getAttribute('data-filter-list')); if(!list) return; var q=inp.value.trim().toLowerCase(); qs(list,'.fd-check').forEach(function(lbl){ var t=lbl.getAttribute('data-text')||''; lbl.style.display = (!q || t.indexOf(q)>=0)?'flex':'none'; }); }); });
-  function submitParentForm(node){ var f=node.closest('form'); if(f){ f.submit(); } }
-  // clear buttons (y enviar)
-  qs(null,'.fd-clear').forEach(function(btn){ btn.addEventListener('click', function(){ var name=btn.getAttribute('data-clear'); qs(btn.closest('.fd-panel'),'input[type="checkbox"]').forEach(function(cb){ if(cb.name===name) cb.checked=false; }); // update badge
-    var wrap=btn.closest('.fd-wrap'); var badge=wrap && wrap.querySelector('.fd-badge'); if(badge){ badge.style.display='none'; badge.textContent=''; }
-    submitParentForm(btn);
-  }); });
-  // update badges on change y auto-submit
-  qs(null,'.fd-panel input[type="checkbox"]').forEach(function(cb){ cb.addEventListener('change', function(){ var wrap=cb.closest('.fd-wrap'); if(!wrap) return; var all=qs(wrap,'.fd-panel input[type="checkbox"]').filter(function(x){return x.checked;}); var badge=wrap.querySelector('.fd-badge'); if(!badge) return; if(all.length){ badge.style.display='inline-block'; badge.textContent=all.length; } else { badge.style.display='none'; badge.textContent=''; }
-    submitParentForm(cb);
-  }); });
-  // seleccionar todo
-  qs(null,'.fd-select-all').forEach(function(sel){ sel.addEventListener('change', function(){ var list = document.querySelector(sel.getAttribute('data-list')); var name = sel.getAttribute('data-name'); if(!list||!name) return; var cbs = qs(list,'input[type="checkbox"]'); cbs = cbs.filter(function(x){ return x.name===name; }); cbs.forEach(function(cb){ cb.checked = sel.checked; }); var wrap=sel.closest('.fd-wrap'); if(wrap){ var badge=wrap.querySelector('.fd-badge'); if(badge){ var count=cbs.filter(function(x){return x.checked;}).length; if(count){ badge.style.display='inline-block'; badge.textContent=count; } else { badge.style.display='none'; badge.textContent=''; } } } submitParentForm(sel); }); });
+  function togglePanel(btn){ var id=btn.getAttribute('data-target'); if(!id) return; var p=document.querySelector(id); if(!p) return; var open=p.classList.contains('open'); closeAll(); if(!open){ p.classList.add('open'); } }
+  function closeAll(){ qs(null,'.fd-panel.open').forEach(function(p){ p.classList.remove('open'); }); }
+  function submitParentForm(node){ var f=node && node.closest && node.closest('form'); if(f){ f.submit(); } }
+
+  // Delegación de eventos para soportar elementos añadidos después
+  document.addEventListener('click', function(e){
+    var btn = e.target.closest && e.target.closest('.fd-button');
+    if (btn) { e.stopPropagation(); togglePanel(btn); return; }
+    var clear = e.target.closest && e.target.closest('.fd-clear');
+    if (clear) {
+      var name = clear.getAttribute('data-clear');
+      var panel = clear.closest('.fd-panel');
+      if (panel) {
+        qs(panel,'input[type="checkbox"]').forEach(function(cb){ if(cb.name===name) cb.checked=false; });
+        var wrap=panel.closest('.fd-wrap'); var badge=wrap && wrap.querySelector('.fd-badge'); if(badge){ badge.style.display='none'; badge.textContent=''; }
+      }
+      submitParentForm(clear);
+      return;
+    }
+    // Clic fuera: cerrar paneles
+    if (!e.target.closest || !e.target.closest('.fd-panel')) { closeAll(); }
+  });
+
+  document.addEventListener('input', function(e){
+    if (e.target && e.target.matches('.fd-search input')) {
+      var list = document.querySelector(e.target.getAttribute('data-filter-list'));
+      if(!list) return; var q=e.target.value.trim().toLowerCase();
+      qs(list,'.fd-check').forEach(function(lbl){ var t=lbl.getAttribute('data-text')||''; lbl.style.display = (!q || t.indexOf(q)>=0)?'flex':'none'; });
+    }
+  });
+
+  document.addEventListener('change', function(e){
+    if (e.target && e.target.matches('.fd-panel input[type="checkbox"]')) {
+      var cb=e.target; var wrap=cb.closest('.fd-wrap'); if(!wrap) return; var all=qs(wrap,'.fd-panel input[type="checkbox"]').filter(function(x){return x.checked;}); var badge=wrap.querySelector('.fd-badge'); if(!badge) return; if(all.length){ badge.style.display='inline-block'; badge.textContent=all.length; } else { badge.style.display='none'; badge.textContent=''; }
+      submitParentForm(cb);
+    }
+    if (e.target && e.target.matches('.fd-select-all')) {
+      var sel=e.target; var list = document.querySelector(sel.getAttribute('data-list')); var name = sel.getAttribute('data-name'); if(!list||!name) return; var cbs = qs(list,'input[type="checkbox"]'); cbs = cbs.filter(function(x){ return x.name===name; }); cbs.forEach(function(cb){ cb.checked = sel.checked; }); var wrap=sel.closest('.fd-wrap'); if(wrap){ var badge=wrap.querySelector('.fd-badge'); if(badge){ var count=cbs.filter(function(x){return x.checked;}).length; if(count){ badge.style.display='inline-block'; badge.textContent=count; } else { badge.style.display='none'; badge.textContent=''; } } } submitParentForm(sel);
+    }
+  });
 })();
 </script>
 
@@ -474,10 +540,16 @@ $dataR  = array_values($recvBase);
                   <input type="text" placeholder="Buscar…" data-filter-list="#fd-providers-list">
                 </div>
                 <div id="fd-providers-list" class="fd-list">
-                  <?php foreach ($providers as $nif=>$lab): ?>
-                    <label class="fd-check" data-text="<?php echo htmlspecialchars(mb_strtolower($lab.' '.$nif)); ?>">
-                      <input type="checkbox" name="rs[]" value="<?php echo htmlspecialchars($nif); ?>" <?php echo (in_array($nif, $rsSel??[], true)?'checked':''); ?>>
-                      <?php echo htmlspecialchars($lab); ?>
+                  <?php foreach ($providers as $key=>$name): ?>
+                    <?php
+                      $isByName = (strncmp((string)$key, 'name:', 5) === 0);
+                      $labelShown = $isByName ? (string)$name : ((string)$name . ' (' . $key . ')');
+                      $dataText = mb_strtolower($labelShown);
+                      $checked = in_array((string)$key, $rsSel??[], true);
+                    ?>
+                    <label class="fd-check" data-text="<?php echo htmlspecialchars($dataText); ?>">
+                      <input type="checkbox" name="rs[]" value="<?php echo htmlspecialchars((string)$key); ?>" <?php echo $checked?'checked':''; ?>>
+                      <?php echo htmlspecialchars($labelShown); ?>
                     </label>
                   <?php endforeach; ?>
                 </div>

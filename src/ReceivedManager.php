@@ -304,6 +304,39 @@ final class ReceivedManager
         save_json($provFile, ['updatedAt'=>date('c'),'providers'=>$map]);
     }
 
+    /** Relee los XML y rellena NIF/Nombre/Fecha que falten en el índice. */
+    public function backfillIndexMeta(): void
+    {
+        $index = load_json($this->indexFile);
+        $items = (array)($index['items'] ?? []);
+        $changed = false;
+        foreach ($items as &$it) {
+            $need = false;
+            $supplierNif  = trim((string)($it['supplierNif'] ?? ''));
+            $supplierName = trim((string)($it['supplierName'] ?? ''));
+            $buyerNif     = trim((string)($it['buyerNif'] ?? ''));
+            $issue        = trim((string)($it['issueDate'] ?? ''));
+            if ($supplierNif === '' || $supplierName === '' || $buyerNif === '' || $issue === '') $need = true;
+            $file = (string)($it['file'] ?? '');
+            if (!$need || $file === '') continue;
+            $full = $this->receivedDir . '/' . basename($file);
+            if (!is_file($full)) continue;
+            $xml = @file_get_contents($full);
+            if ($xml === false || $xml === '') continue;
+            $meta = $this->extractMetaFromFacturae($xml);
+            if ($supplierNif === '' && !empty($meta['supplierNif'])) { $it['supplierNif'] = $meta['supplierNif']; $changed = true; }
+            if ($supplierName === '' && !empty($meta['supplierName'])) { $it['supplierName'] = $meta['supplierName']; $changed = true; }
+            if ($buyerNif === '' && !empty($meta['buyerNif'])) { $it['buyerNif'] = $meta['buyerNif']; $changed = true; }
+            if ($issue === '' && !empty($meta['issueDate'])) { $it['issueDate'] = $meta['issueDate']; $changed = true; }
+        }
+        unset($it);
+        if ($changed) {
+            $index['items'] = $items;
+            $index['updatedAt'] = date('c');
+            save_json($this->indexFile, $index);
+        }
+    }
+
     /** Devuelve el mapa de proveedores (NIF=>Nombre). Si no existe, lo crea. */
     public function getProvidersMap(): array
     {
@@ -312,7 +345,14 @@ final class ReceivedManager
             $this->refreshProvidersCache();
         }
         $data = load_json($provFile);
-        return (array)($data['providers'] ?? []);
+        $map = (array)($data['providers'] ?? []);
+        // Si está vacío pero hay índice de recibidas, intenta refrescar y recargar
+        if (!$map) {
+            try { $this->refreshProvidersCache(); } catch (\Throwable $e) {}
+            $data = load_json($provFile);
+            $map = (array)($data['providers'] ?? []);
+        }
+        return $map;
     }
 
     /** Guarda recibida subida manualmente y actualiza índice + proveedores. */
@@ -655,8 +695,13 @@ final class ReceivedManager
             }
 
             $out['supplierNif'] = $xp($sx, [
-                '//fe321:Facturae/fe321:Parties/fe321:SellerParty/fe321:TaxIdentification/fe321:TaxIdentificationNumber',
+                // Versionadas
                 '//fe:Facturae/fe:Parties/fe:SellerParty/fe:TaxIdentification/fe:TaxIdentificationNumber',
+                '//fe321:Facturae/fe321:Parties/fe321:SellerParty/fe321:TaxIdentification/fe321:TaxIdentificationNumber',
+                '//fe322:Facturae/fe322:Parties/fe322:SellerParty/fe322:TaxIdentification/fe322:TaxIdentificationNumber',
+                '//fe33:Facturae/fe33:Parties/fe33:SellerParty/fe33:TaxIdentification/fe33:TaxIdentificationNumber',
+                // Fallback por local-name (dos estructuras habituales)
+                '//*[local-name()="Facturae"]'.$LN('Parties','SellerParty','TaxIdentification','TaxIdentificationNumber'),
                 '//*[local-name()="Facturae"]'.$LN('Parties','Sellers','Seller','TaxIdentification','TaxIdentificationNumber'),
             ]);
             $out['supplierName'] = $xp($sx, [
@@ -673,8 +718,13 @@ final class ReceivedManager
             }
 
             $out['buyerNif'] = $xp($sx, [
-                '//fe321:Facturae/fe321:Parties/fe321:BuyerParty/fe321:TaxIdentification/fe321:TaxIdentificationNumber',
+                // Versionadas
                 '//fe:Facturae/fe:Parties/fe:BuyerParty/fe:TaxIdentification/fe:TaxIdentificationNumber',
+                '//fe321:Facturae/fe321:Parties/fe321:BuyerParty/fe321:TaxIdentification/fe321:TaxIdentificationNumber',
+                '//fe322:Facturae/fe322:Parties/fe322:BuyerParty/fe322:TaxIdentification/fe322:TaxIdentificationNumber',
+                '//fe33:Facturae/fe33:Parties/fe33:BuyerParty/fe33:TaxIdentification/fe33:TaxIdentificationNumber',
+                // Fallback por local-name (dos estructuras habituales)
+                '//*[local-name()="Facturae"]'.$LN('Parties','BuyerParty','TaxIdentification','TaxIdentificationNumber'),
                 '//*[local-name()="Facturae"]'.$LN('Parties','Buyers','Buyer','TaxIdentification','TaxIdentificationNumber'),
             ]);
 
@@ -764,7 +814,14 @@ final class ReceivedManager
         $sellerIndName = $xp($sx, ['//*[local-name()="Facturae"]'.$LN('Parties','SellerParty','Individual','Name')]);
         $sellerIsIndividual = (strtoupper($sellerPT) === 'F') || ($sellerIndName !== '');
         $seller = [
-            'nif'  => $xp($sx, ['//*[local-name()="Facturae"]'.$LN('Parties','SellerParty','TaxIdentification','TaxIdentificationNumber')]),
+            'nif'  => $xp($sx, [
+                '//fe:Facturae/fe:Parties/fe:SellerParty/fe:TaxIdentification/fe:TaxIdentificationNumber',
+                '//fe321:Facturae/fe321:Parties/fe321:SellerParty/fe321:TaxIdentification/fe321:TaxIdentificationNumber',
+                '//fe322:Facturae/fe322:Parties/fe322:SellerParty/fe322:TaxIdentification/fe322:TaxIdentificationNumber',
+                '//fe33:Facturae/fe33:Parties/fe33:SellerParty/fe33:TaxIdentification/fe33:TaxIdentificationNumber',
+                '//*[local-name()="Facturae"]'.$LN('Parties','SellerParty','TaxIdentification','TaxIdentificationNumber'),
+                '//*[local-name()="Facturae"]'.$LN('Parties','Sellers','Seller','TaxIdentification','TaxIdentificationNumber'),
+            ]),
             'name' => $xp($sx, [
                 '//*[local-name()="Facturae"]'.$LN('Parties','SellerParty','LegalEntity','CorporateName'),
                 '(//*[local-name()="Facturae"]'.$LN('Parties','SellerParty','Individual','Name').' )[1]'
@@ -789,7 +846,14 @@ final class ReceivedManager
             'isIndividual' => $sellerIsIndividual,
         ];
         $buyer = [
-            'nif'  => $xp($sx, ['//*[local-name()="Facturae"]'.$LN('Parties','BuyerParty','TaxIdentification','TaxIdentificationNumber')]),
+            'nif'  => $xp($sx, [
+                '//fe:Facturae/fe:Parties/fe:BuyerParty/fe:TaxIdentification/fe:TaxIdentificationNumber',
+                '//fe321:Facturae/fe321:Parties/fe321:BuyerParty/fe321:TaxIdentification/fe321:TaxIdentificationNumber',
+                '//fe322:Facturae/fe322:Parties/fe322:BuyerParty/fe322:TaxIdentification/fe322:TaxIdentificationNumber',
+                '//fe33:Facturae/fe33:Parties/fe33:BuyerParty/fe33:TaxIdentification/fe33:TaxIdentificationNumber',
+                '//*[local-name()="Facturae"]'.$LN('Parties','BuyerParty','TaxIdentification','TaxIdentificationNumber'),
+                '//*[local-name()="Facturae"]'.$LN('Parties','Buyers','Buyer','TaxIdentification','TaxIdentificationNumber'),
+            ]),
             'name' => $xp($sx, [
                 '//*[local-name()="Facturae"]'.$LN('Parties','BuyerParty','LegalEntity','CorporateName'),
                 '(//*[local-name()="Facturae"]'.$LN('Parties','BuyerParty','Individual','Name').' )[1]'
