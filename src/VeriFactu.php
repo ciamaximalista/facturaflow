@@ -155,30 +155,36 @@ class VeriFactu {
         // Guardar PNG en disco y preparar ruta relativa web
         $qrRel = null;
         if (!empty($qrPngB64)) {
-            // 1) Si viene como data URL, quédate solo con la parte base64
-            $rawB64 = $qrPngB64;
-            if (preg_match('~^data:image/[^;]+;base64,~i', $rawB64)) {
-                $rawB64 = substr($rawB64, strpos($rawB64, ',') + 1);
+            // Normaliza a base64 “puro” del PNG, evitando doble codificaciones tipo base64(data-url)
+            $b64 = $qrPngB64;
+            if (preg_match('~^data:image/[^;]+;base64,~i', $b64)) {
+                $b64 = substr($b64, strpos($b64, ',') + 1);
+            } else {
+                // ¿Es base64 del propio data-url? Decodifica una vez y vuelve a mirar
+                $tmp = base64_decode($b64, true);
+                if ($tmp !== false && stripos($tmp, 'data:image/') === 0) {
+                    $pos = strpos($tmp, ',');
+                    if ($pos !== false) {
+                        $b64 = substr($tmp, $pos + 1);
+                    }
+                }
             }
 
-            // 2) Decodifica en estricto
-            $raw = base64_decode($rawB64, true);
-
+            // Decodifica y persistencia si es PNG válido
+            $raw = base64_decode($b64, true);
             if ($raw !== false && strlen($raw) > 8) {
-                // 3) Comprobación mínima de firma PNG
                 $isPng = (substr($raw, 0, 8) === "\x89PNG\x0D\x0A\x1A\x0A");
-
                 $qrDir = __DIR__ . '/../data/verifactu/qr/';
                 if (!is_dir($qrDir)) @mkdir($qrDir, 0775, true);
                 $fname = safe_filename((string)($inv->id ?? $number)) . '.png';
                 $qrAbs = $qrDir . $fname;
-
                 if ($isPng) {
                     @file_put_contents($qrAbs, $raw);
                     @chmod($qrAbs, 0644);
-                    $qrRel = 'data/verifactu/qr/' . $fname; // para <img src="...">
+                    $qrRel = 'data/verifactu/qr/' . $fname;
+                    // Sobreescribe $qrPngB64 con base64 “puro” para persistir/plantilla
+                    $qrPngB64 = $b64;
                 } else {
-                    // deja rastro para diagnóstico
                     @file_put_contents($qrDir . 'qr_debug_invalid.bin', $raw);
                 }
             }
@@ -186,7 +192,7 @@ class VeriFactu {
 
 
         // 7) Añadir entrada al log (con bloqueo de fichero)
-        $this->appendEntryToXmlLog([
+            $this->appendEntryToXmlLog([
             'timestamp'   => (new \DateTimeImmutable())->format(DATE_ATOM),
             'hashedAt'    => $hashedAt->format(DATE_ATOM),
             'invoiceId'   => (string)($inv->id ?? $number),
@@ -214,6 +220,7 @@ class VeriFactu {
                     $im->embedVerifactuMeta($invoiceId, [
                         'hash'        => $hash,
                         'qrUrl'       => $qrString,
+                        // Guarda SIEMPRE base64 “puro” (sin prefijo data:), la vista lo envolverá
                         'qrCodeB64'   => $qrPngB64,
                         'qrImagePath' => $qrRel,
                     ]);
@@ -548,4 +555,3 @@ class VeriFactu {
         return json_encode($canon, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES) ?: '';
     }
 }
-

@@ -9,6 +9,9 @@
 
 .invoice-container {
     padding: 2.5rem 3rem;
+    position: relative;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .invoice-header-grid {
@@ -44,13 +47,12 @@
 /* ESTILOS PARA EL BLOQUE REUBICADO */
 .invoice-meta-data {
     display: flex;
-    justify-content: space-between;
+    flex-direction: column;
+    gap: .5rem;
     padding: 1.5rem 0;
     margin-bottom: 1rem;
 }
-.invoice-meta-data div {
-    flex-basis: 48%;
-}
+.invoice-meta-data div { flex-basis: auto; }
 .invoice-meta-data strong {
     color: var(--text-color);
     margin-right: 0.5rem;
@@ -108,10 +110,42 @@
     color: var(--primary-color);
 }
 
+/* Banda superior de estado de pagos */
+.status-banner{
+  margin: .75rem 0 1rem 0;
+  padding:.6rem .9rem;
+  border-radius:.5rem;
+  font-weight:600;
+  border:1px solid transparent;
+}
+.status-pagada{ background:#e2f0d9; color:#1d643b; border-color:#c7e5b2; }
+.status-rechazada{ background:#f8d7da; color:#721c24; border-color:#f5c6cb; }
+.status-pendiente-pago{ background:#fff7e6; color:#7a4b00; border-color:#e8cfa6; }
+.status-pendiente{ background:#e6f4ff; color:#0b74c4; border-color:#b3dbff; }
+.status-anulada{ background:#f3f4f6; color:#374151; border-color:#e5e7eb; }
+
+/* Badges */
+.badge{ display:inline-block; font-size:.75rem; padding:.25rem .5rem; border-radius:.4rem; margin-left:.5rem; vertical-align:middle; font-weight: 600; }
+.badge-rectificative{ background:#e8f4ff; color:#0b74c4; border:1px solid #b7d8ff; }
+.badge-cancelled{ background:#ffe8e8; color:#c00; border:1px solid #ffc2c2; }
+
+.qr-code img{ display:block; width:120px; height:120px; object-fit:contain; }
+.qr-missing{ width:120px; height:120px; display:flex; align-items:center; justify-content:center; background:#f2f2f2; color:#666; font-size:.8rem; border-radius:.5rem; }
+.suplido-separator td{ border-top:2px solid #ccc; background:#f9f9f9; padding-top:.5rem!important; padding-bottom:.5rem!important; }
+.hash-container{padding:.75rem 1rem;border:1px solid #e5e7eb;border-radius:.5rem;background:#fafafa;margin-right:1rem}
+.hash-container .mono{font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
+
 @media print {
     body { display: block; }
     .sidebar, .invoice-view-header { display: none; }
     .main-content { padding: 0; }
     .card { box-shadow: none; border: 1px solid #ccc; }
     .invoice-container { padding: 1.5rem; }
+}
+
+/* Responsivo: apila cabecera/QR y metadatos en pantallas estrechas */
+@media (max-width: 900px) {
+  .invoice-header-grid { grid-template-columns: 1fr; }
+  .qr-code { justify-content: flex-start; }
+  .invoice-footer-grid { grid-template-columns: 1fr; }
 }

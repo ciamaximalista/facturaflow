@@ -339,6 +339,66 @@ final class InvoiceManager {
         return $this->saveInvoiceObject($inv);
     }
 
+    /** Actualiza estado de FACE a partir de respuesta del API /v1/invoices/{registryCode} */
+    public function setFaceStatusFromApi(string $invoiceId, array $api): bool {
+        $inv = $this->getInvoiceById($invoiceId);
+        if (!$inv) return false;
+        if (!isset($inv->face)) $inv->addChild('face');
+
+        $face = $inv->face;
+        // status actual: intenta último del historial; si no, usa 'status'
+        $statusCode = '';
+        $statusName = '';
+        if (isset($api['statusHistory']) && is_array($api['statusHistory']) && count($api['statusHistory']) > 0) {
+            $last = end($api['statusHistory']);
+            if (is_array($last)) {
+                $statusCode = (string)($last['code'] ?? '');
+                $statusName = (string)($last['name'] ?? '');
+            }
+        }
+        if ($statusName === '' && isset($api['status'])) {
+            $statusName = (string)$api['status'];
+        }
+
+        // Normaliza etiqueta para UI
+        $nameLower = mb_strtolower($statusName, 'UTF-8');
+        $ui = 'Pendiente de aceptación';
+        if ($statusCode === '2500' || str_contains($nameLower, 'pagada')) {
+            $ui = 'Pagada';
+        } elseif ($statusCode === '2600' || str_contains($nameLower, 'rechaz')) {
+            $ui = 'Rechazada';
+        } elseif ($statusCode === '3100' || str_contains($nameLower, 'anulad')) {
+            $ui = 'Anulada';
+        } elseif ($statusCode === '2400' || str_contains($nameLower, 'trámite') || str_contains($nameLower, 'contabiliz')) {
+            $ui = 'Pendiente de pago';
+        } elseif ($statusCode === '1200' || $statusCode === '1300' || str_contains($nameLower, 'registr')) {
+            $ui = 'Pendiente de aceptación';
+        }
+
+        // Persistir campos clave
+        $face->statusCode  = $statusCode;
+        $face->statusName  = $statusName;
+        $face->statusText  = $ui;
+        if (isset($api['registryCode'])) $face->registerNumber = (string)$api['registryCode'];
+        if (isset($api['registryDate'])) $face->registryDate   = (string)$api['registryDate'];
+        $face->lastUpdate  = date('c');
+
+        // (opcional) historial resumido (codes)
+        if (isset($api['statusHistory']) && is_array($api['statusHistory'])) {
+            // Borra historial previo para evitar crecimiento infinito
+            if (isset($face->statusHistory)) unset($face->statusHistory);
+            $hist = $face->addChild('statusHistory');
+            foreach ($api['statusHistory'] as $h) {
+                if (!is_array($h)) continue;
+                $e = $hist->addChild('entry');
+                if (isset($h['code'])) $e->addChild('code', htmlspecialchars((string)$h['code']));
+                if (isset($h['name'])) $e->addChild('name', htmlspecialchars((string)$h['name']));
+            }
+        }
+
+        return $this->saveInvoiceObject($inv);
+    }
+
     public function setFaceb2bCode(string $invoiceId, string $code): bool {
         $path = $this->getInvoicePathFromId($invoiceId);
         if (!is_file($path) || !is_writable($path)) return false;
@@ -484,7 +544,8 @@ final class InvoiceManager {
         $set($vf, 'qrCode',      $meta['qrCodeB64']   ?? null); // base64 PNG
         $set($vf, 'qrImagePath', $meta['qrImagePath'] ?? null); // ruta relativa (si la hay)
 
-        $this->saveInvoiceXml($invoiceId, $xml); // usa tu método interno de guardado
+        // Persistir en disco usando el guardado interno existente
+        $this->saveInvoiceObject($xml);
     }
 
 
@@ -587,6 +648,18 @@ final class InvoiceManager {
             'province'      => (string)($cliXml->province ?? ($clientObj->province ?? '')),
             'countryCode'   => (string)($cliXml->countryCode ?? ($clientObj->countryCode ?? 'ESP')),
         ];
+
+        // Residencia: fuerza código o bandera UE según ficha del cliente
+        $residency = isset($clientObj->residency) ? (string)$clientObj->residency : '';
+        if ($residency !== '') {
+            if ($residency === 'resident_es') {
+                $buyer['countryCode'] = 'ESP';
+            } elseif ($residency === 'eu') {
+                $buyer['isEuropeanUnionResident'] = true;  // fuerza U en <ResidenceTypeCode>
+            } elseif ($residency === 'non_eu') {
+                $buyer['isEuropeanUnionResident'] = false; // fuerza E en <ResidenceTypeCode>
+            }
+        }
 
         // ---- DIR3/centros desde la ficha si existen
         $buyer['face_dir3_oc'] = strtoupper(trim((string)($clientObj->face_dir3_oc ?? $clientObj->dir3_oc ?? '')));
@@ -699,4 +772,3 @@ final class InvoiceManager {
         return (string)$v;
     }
 }
-

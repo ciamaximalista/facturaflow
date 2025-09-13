@@ -91,6 +91,22 @@ $dir3UT = (string)($client->dir3UT ?? $client->face_dir3_ut ?? $client->dir3_pro
       <small class="help-text">Sin espacios ni guiones.</small>
     </div>
 
+    <div class="form-group">
+      <?php
+        $cc = strtoupper((string)($client->countryCode ?? 'ESP'));
+        $euSet = ['AUT','BEL','BGR','CYP','CZE','DEU','DNK','ESP','EST','FIN','FRA','GRC','HRV','HUN','IRL','ITA','LTU','LUX','LVA','MLT','NLD','POL','PRT','ROU','SVK','SVN','SWE'];
+        $defaultResidency = ($cc==='ESP') ? 'resident_es' : (in_array($cc, $euSet, true) ? 'eu' : 'non_eu');
+        $residency = (string)($client->residency ?? $defaultResidency);
+      ?>
+      <label for="residency">Residencia fiscal</label>
+      <select id="residency" name="residency" class="form-control">
+        <option value="resident_es" <?= ($residency==='resident_es'?'selected':'') ?>>Residente en España</option>
+        <option value="eu" <?= ($residency==='eu'?'selected':'') ?>>Residente en la UE (no España)</option>
+        <option value="non_eu" <?= ($residency==='non_eu'?'selected':'') ?>>No residente (fuera de la UE)</option>
+      </select>
+      <small class="help-text">Este dato se envía en el Facturae (ResidenceTypeCode).</small>
+    </div>
+
     <!-- DIRe SOLO visible si NO es public_admin -->
     <div id="dire-block">
       <label for="dire">DIRe (FACeB2B)</label>
@@ -234,6 +250,16 @@ $dir3UT = (string)($client->dir3UT ?? $client->face_dir3_ut ?? $client->dir3_pro
     }
   });
 
+  // Autoajuste país según residencia
+  const selResidency = document.getElementById('residency');
+  const inpCountry   = document.getElementById('countryCode');
+  if (selResidency && inpCountry) {
+    selResidency.addEventListener('change', () => {
+      const v = selResidency.value;
+      if (v === 'resident_es') inpCountry.value = 'ESP';
+    });
+  }
+
   // Borrar
   document.getElementById('delete-client')?.addEventListener('click', async () => {
     if (!confirm('¿Seguro que deseas borrar este cliente?')) return;
@@ -257,4 +283,3 @@ $dir3UT = (string)($client->dir3UT ?? $client->face_dir3_ut ?? $client->dir3_pro
   });
 })();
 </script>
-

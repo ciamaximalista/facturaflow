@@ -37,8 +37,15 @@ $qrPathRel = (string)($invoice->verifactu->qrImagePath ?? $invoice->qrImagePath 
 
 
 $qrSrc   = '';
+// Ruta y base64: contempla tanto nodos bajo <verifactu> como nodos raíz
 $qrPath  = (string)($invoice->verifactu->qrImagePath ?? $invoice->qrImagePath ?? '');
-$qrB64   = (string)($invoice->verifactu->qrCodeB64   ?? $invoice->qrCodeB64   ?? $invoice->qrCode ?? '');
+$qrB64   = (string)(
+    $invoice->verifactu->qrCodeB64
+    ?? $invoice->verifactu->qrCode
+    ?? $invoice->qrCodeB64
+    ?? $invoice->qrCode
+    ?? ''
+);
 $baseDir = dirname(__DIR__); // .../templates -> sube a raíz del proyecto
 
 // 1) Si hay ruta física y el fichero existe, úsala directamente
@@ -85,6 +92,19 @@ function verifactu_load_log_entries(): array {
         ];
     }
     return $entries;
+}
+
+
+/** Devuelve la última entrada del log VeriFactu para un id dado (o null). */
+function verifactu_find_entry_for_invoice(string $invoiceId): ?array {
+    $entries = verifactu_load_log_entries();
+    $found = null;
+    foreach ($entries as $e) {
+        if ((string)($e['invoiceId'] ?? '') === $invoiceId) {
+            $found = $e; // se queda con la última coincidencia
+        }
+    }
+    return $found;
 }
 
 
@@ -160,6 +180,7 @@ $fmtDate = function(?string $s): string {
 $fb = isset($invoice->faceb2b) ? $invoice->faceb2b : null;
 $rawStatus = '';
 $paidAt = $acceptedAt = $rejectedAt = '';
+$rejectReason = '';
 
 if ($fb) {
   $rawStatus = strtolower(trim((string)(
@@ -170,20 +191,38 @@ if ($fb) {
       ?? ($fb->paymentState ?? '')
       ?? ($fb->state ?? '')
   )));
-  $paidAt     = (string)($fb->paymentDate ?? $fb->paidAt ?? ($fb->payment->date ?? ''));
-  $acceptedAt = (string)($fb->acceptedAt ?? $fb->acceptanceDate ?? ($fb->payment->acceptedAt ?? ''));
-  $rejectedAt = (string)($fb->rejectedAt ?? $fb->rejectionDate ?? '');
+  $paidAt       = (string)($fb->paymentDate ?? $fb->paidAt ?? ($fb->payment->date ?? ''));
+  $acceptedAt   = (string)($fb->acceptedAt ?? $fb->acceptanceDate ?? ($fb->payment->acceptedAt ?? ''));
+  $rejectedAt   = (string)($fb->rejectedAt ?? $fb->rejectionDate ?? '');
+  $rejectReason = (string)($fb->rejectionReason ?? $fb->rejectReason ?? '');
 }
 
 $payStatus = '';
-if ($paidAt !== '' || in_array($rawStatus, ['paid','pagada','abonada','satisfecha'], true)) {
-  $payStatus = 'Pagada';
-} elseif ($rejectedAt !== '' || in_array($rawStatus, ['rejected','rechazada'], true)) {
-  $payStatus = 'Rechazada';
-} elseif ($acceptedAt !== '' || in_array($rawStatus, ['accepted','aceptada','conformada','reconocida','pendiente de pago'], true)) {
-  $payStatus = 'Pendiente de pago';
-} else {
-  $payStatus = 'Pendiente de aprobar';
+// Preferir estado de FACE si hay registro o estado en el nodo <face>
+$faceNode = isset($invoice->face) ? $invoice->face : null;
+$faceReg  = $faceNode ? trim((string)($faceNode->registerNumber ?? '')) : '';
+if ($faceReg !== '' || ($faceNode && (string)($faceNode->statusText ?? $faceNode->statusName ?? '') !== '')) {
+  $t = strtolower(trim((string)($faceNode->statusText ?? $faceNode->statusName ?? '')));
+  if ($t !== '') {
+    if (str_contains($t, 'pagada'))       $payStatus = 'Pagada';
+    elseif (str_contains($t, 'rechaz'))   $payStatus = 'Rechazada';
+    elseif (str_contains($t, 'anulad'))   $payStatus = 'Anulada';
+    elseif (str_contains($t, 'trámite') || str_contains($t, 'pago')) $payStatus = 'Pendiente de pago';
+    elseif (str_contains($t, 'registr'))  $payStatus = 'Pendiente de aceptación';
+  }
+}
+// Si no hay dato de FACE, usar FACeB2B
+if ($payStatus === '') {
+  if ($paidAt !== '' || in_array($rawStatus, ['paid','pagada','abonada','satisfecha'], true)) {
+    $payStatus = 'Pagada';
+  } elseif ($rejectedAt !== '' || in_array($rawStatus, ['rejected','rechazada'], true)) {
+    $payStatus = 'Rechazada';
+  } elseif ($acceptedAt !== '' || in_array($rawStatus, ['accepted','aceptada','conformada','reconocida','pendiente de pago'], true)) {
+    $payStatus = 'Pendiente de pago';
+  } else {
+    // Enviada sin reacción del buyer
+    $payStatus = 'Pendiente de aceptación';
+  }
 }
 
 $bannerClass = match (mb_strtolower($payStatus, 'UTF-8')) {
@@ -194,10 +233,10 @@ $bannerClass = match (mb_strtolower($payStatus, 'UTF-8')) {
 };
 
 $bannerText = match (mb_strtolower($payStatus, 'UTF-8')) {
-  'rechazada'         => 'Factura rechazada' . ($rejectedAt ? ' · ' . $fmtDate($rejectedAt) : ''),
+  'rechazada'         => 'Factura rechazada' . ($rejectedAt ? ' · ' . $fmtDate($rejectedAt) : '') . ($rejectReason ? ' · ' . $rejectReason : ''),
   'pagada'            => 'Factura pagada'    . ($paidAt     ? ' · ' . $fmtDate($paidAt)     : ''),
   'pendiente de pago' => 'Aceptada; pendiente de pago' . ($acceptedAt ? ' · ' . $fmtDate($acceptedAt) : ''),
-  default             => 'Pendiente de aprobación',
+  default             => 'Pendiente de aceptación',
 };
 ?>
 
@@ -208,13 +247,26 @@ $bannerText = match (mb_strtolower($payStatus, 'UTF-8')) {
         <?php if ($cancelled): ?><span class="badge badge-cancelled">Rectificada</span><?php endif; ?>
     </h2>
     <div>
-        <a href="index.php?page=export_facturae&id=<?php echo urlencode((string)$invoice->id); ?>" class="btn">Exportar Factura-e</a>
+        <form id="faceb2bSyncFormView" method="POST" action="index.php" style="display:inline-block; margin-right:.4rem;">
+            <input type="hidden" name="action" value="sync_faceb2b">
+            <button id="btnSyncFaceB2BView" class="btn btn-primary" type="submit">🔄 Sincronizar FACeB2B</button>
+            <span id="faceb2bSyncMsgView" class="muted" style="margin-left:.5rem;"></span>
+        </form>
+        <?php
+          // Número de registro FACeB2B (usado por otras funcionalidades)
+          $reg = isset($invoice->faceb2b->registrationCode) ? (string)$invoice->faceb2b->registrationCode : '';
+        ?>
+        <a href="index.php?page=print_invoice&id=<?php echo urlencode((string)$invoice->id); ?>" class="btn">PDF para imprimir</a>
         <a href="javascript:window.print()" class="btn">Imprimir</a>
         <?php if (!$cancelled): ?>
             <a href="index.php?page=rectify_prompt&id=<?php echo urlencode((string)$invoice->id); ?>" class="btn btn-danger">Rectificar</a>
         <?php endif; ?>
     </div>
+
+
 </div>
+
+ 
 
 <!-- ===== NUEVO: Banda de estado de pagos arriba ===== -->
 <div class="status-banner <?php echo $bannerClass; ?>">
@@ -284,18 +336,42 @@ $bannerText = match (mb_strtolower($payStatus, 'UTF-8')) {
 
         <div class="qr-code">
         <?php
-          $qrPath = (string)($invoice->verifactu->qrImagePath ?? '');
-          $qrB64  = (string)($invoice->verifactu->qrCodeB64 ?? $invoice->qrCode ?? '');
-          if ($qrPath !== '' && file_exists(__DIR__ . '/../' . $qrPath)) {
+          $qrPath = (string)($invoice->verifactu->qrImagePath ?? $invoice->qrImagePath ?? '');
+          $qrB64  = (string)(
+              $invoice->verifactu->qrCodeB64
+              ?? $invoice->verifactu->qrCode
+              ?? $invoice->qrCodeB64
+              ?? $invoice->qrCode
+              ?? ''
+          );
+          $absTry = ($qrPath !== '' && $qrPath[0] === '/') ? $qrPath : (__DIR__ . '/../' . ltrim($qrPath, '/'));
+          if ($qrPath !== '' && file_exists($absTry)) {
             // preferimos el fichero PNG real
             $src = htmlspecialchars($qrPath, ENT_QUOTES, 'UTF-8');
             echo '<img src="' . $src . '" alt="QR">';
           } elseif ($qrB64 !== '') {
-            // cae al base64 “puro” (¡OJO!: sin prefijo data:)
-            $src = 'data:image/png;base64,' . htmlspecialchars($qrB64, ENT_QUOTES, 'UTF-8');
-            echo '<img src="' . $src . '" alt="QR">';
+            // admite ya sea data:... o base64 “puro”
+            if (preg_match('~^data:image/[^;]+;base64,~i', $qrB64)) {
+              $src = $qrB64;
+            } else {
+              $src = 'data:image/png;base64,' . $qrB64;
+            }
+            echo '<img src="' . htmlspecialchars($src, ENT_QUOTES, 'UTF-8') . '" alt="QR">';
           } else {
-            echo '<div class="qr-missing">QR no disponible</div>';
+            // Fallback: busca en el log verifactu si hay QR para esta factura
+            $entry = verifactu_find_entry_for_invoice((string)$invoice->id);
+            $logPath = is_array($entry) ? (string)($entry['qrImagePath'] ?? '') : '';
+            $logB64  = is_array($entry) ? (string)($entry['qrPngB64']    ?? '') : '';
+            $absLog  = ($logPath !== '' && $logPath[0] === '/') ? $logPath : (__DIR__ . '/../' . ltrim($logPath, '/'));
+
+            if ($logPath !== '' && file_exists($absLog)) {
+              echo '<img src="' . htmlspecialchars($logPath, ENT_QUOTES, 'UTF-8') . '" alt="QR">';
+            } elseif ($logB64 !== '') {
+              $src = preg_match('~^data:image/[^;]+;base64,~i', $logB64) ? $logB64 : ('data:image/png;base64,' . $logB64);
+              echo '<img src="' . htmlspecialchars($src, ENT_QUOTES, 'UTF-8') . '" alt="QR">';
+            } else {
+              echo '<div class="qr-missing">QR no disponible</div>';
+            }
           }
         ?>
         </div>
@@ -437,17 +513,30 @@ $bannerText = match (mb_strtolower($payStatus, 'UTF-8')) {
   border:1px solid transparent;
 }
 .status-pagada{
-  background:#eff6ff; color:#1d4ed8; border-color:#bfdbfe;
+  background:#e2f0d9; color:#1d643b; border-color:#c7e5b2;
 }
 .status-rechazada{
-  background:#fef2f2; color:#dc2626; border-color:#fecaca;
+  background:#f8d7da; color:#721c24; border-color:#f5c6cb;
 }
 .status-pendiente-pago{
-  background:#fefce8; color:#92400e; border-color:#fde68a;
+  background:#fff7e6; color:#7a4b00; border-color:#e8cfa6;
 }
 .status-pendiente{
-  background:#f3f4f6; color:#111827; border-color:#e5e7eb;
+  background:#e6f4ff; color:#0b74c4; border-color:#b3dbff;
 }
+.status-anulada{
+  background:#f3f4f6; color:#374151; border-color:#e5e7eb;
+}
+
+/* Banner aviso cancelación pendiente */
+ 
+
+/* Modales (reutilizable) */
+.modal{ position:fixed; inset:0; background:rgba(0,0,0,.4); display:flex; align-items:center; justify-content:center; z-index:1000; }
+.modal[hidden]{ display:none; }
+.modal-content{ background:#fff; border-radius:.5rem; padding:1rem; width:min(520px, 94vw); box-shadow:0 10px 30px rgba(0,0,0,.18); }
+.modal-actions{ margin-top:1rem; display:flex; gap:.6rem; justify-content:flex-end; }
+.form-control{ width:100%; padding:.45rem .55rem; border:1px solid #d1d5db; border-radius:.4rem; }
 
 .suplido-separator td{ border-top:2px solid #ccc; background:#f9f9f9; padding-top:.5rem!important; padding-bottom:.5rem!important; }
 .qr-code img{ display:block; width:120px; height:120px; object-fit:contain; }
@@ -477,6 +566,59 @@ $bannerText = match (mb_strtolower($payStatus, 'UTF-8')) {
 </style>
 
 <script>
+// Sincronizar FACeB2B desde vista individual (refresca estado de pago)
+(function(){
+  const form = document.getElementById('faceb2bSyncFormView');
+  const msg  = document.getElementById('faceb2bSyncMsgView');
+  const btn  = document.getElementById('btnSyncFaceB2BView');
+  if (form) {
+    form.addEventListener('submit', async function(e){
+      e.preventDefault();
+      if (msg) msg.textContent = 'Comprobando FACeB2B...';
+      if (btn) btn.disabled = true;
+      try{
+        const fd = new FormData(form);
+        const res = await fetch('index.php', { method:'POST', body: fd, credentials:'same-origin', cache:'no-store' });
+        const txt = await res.text();
+        let data; try { data = JSON.parse(txt); } catch { throw new Error('Respuesta no válida'); }
+        if (!res.ok || !data.success) throw new Error(data.message || 'Error en la sincronización');
+        if (msg) msg.textContent = data.added_count > 0 ? `Descargadas ${data.added_count} factura(s) nueva(s).` : 'Sin cambios en FACeB2B';
+        setTimeout(()=> location.reload(), 600);
+      }catch(err){ if (msg) msg.textContent = String(err.message || err); }
+      finally{ if (btn) btn.disabled = false; }
+    });
+  }
+})();
+
+ 
+
+</script>
+
+<script>
+(function(){
+  const form = document.getElementById('faceSyncFormView');
+  const msg  = document.getElementById('faceSyncMsgView');
+  const btn  = document.getElementById('btnSyncFaceView');
+  if (!form) return;
+  form.addEventListener('submit', async function(e){
+    e.preventDefault();
+    if (msg) msg.textContent = 'Consultando FACE...';
+    if (btn) btn.disabled = true;
+    try{
+      const fd = new FormData(form);
+      const res = await fetch('index.php', { method:'POST', body: fd, credentials:'same-origin', cache:'no-store' });
+      const txt = await res.text();
+      let data; try { data = JSON.parse(txt); } catch { throw new Error('Respuesta no válida'); }
+      if (!res.ok || !data.success) throw new Error(data.message || 'Error en la sincronización FACE');
+      if (msg) msg.textContent = (data.updated_count > 0 ? `Actualizada` : 'Sin cambios');
+      setTimeout(()=> location.reload(), 600);
+    }catch(err){ if (msg) msg.textContent = String(err.message || err); }
+    finally{ if (btn) btn.disabled = false; }
+  });
+})();
+</script>
+
+<script>
 document.addEventListener('click', function(e){
   const btn = e.target.closest('#vf-copy');
   if (!btn) return;
@@ -489,4 +631,3 @@ document.addEventListener('click', function(e){
   });
 });
 </script>
-

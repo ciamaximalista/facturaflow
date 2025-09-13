@@ -15,17 +15,15 @@ require_once __DIR__ . '/InvoiceManager.php';
 require_once __DIR__ . '/SecureConfig.php';
 
 // Clases de la librería josemmo/Verifactu-PHP (si está instalada vía Composer)
-use josemmo\Verifactu\Models\Taxpayer;
 use josemmo\Verifactu\Models\ComputerSystem;
-use josemmo\Verifactu\Models\RegistrationRecord;
-use josemmo\Verifactu\Models\InvoiceIdentification;
-use josemmo\Verifactu\Models\BreakdownDetail;
-use josemmo\Verifactu\Models\BreakdownDetails;
-use josemmo\Verifactu\Models\FiscalIdentifier;
-use josemmo\Verifactu\Enums\TaxType;
-use josemmo\Verifactu\Enums\RegimeType;
-use josemmo\Verifactu\Enums\OperationType;
-use josemmo\Verifactu\Enums\InvoiceType;
+use josemmo\Verifactu\Models\Records\RegistrationRecord;
+use josemmo\Verifactu\Models\Records\InvoiceIdentifier;
+use josemmo\Verifactu\Models\Records\BreakdownDetails;
+use josemmo\Verifactu\Models\Records\FiscalIdentifier;
+use josemmo\Verifactu\Models\Records\TaxType;
+use josemmo\Verifactu\Models\Records\RegimeType;
+use josemmo\Verifactu\Models\Records\OperationType;
+use josemmo\Verifactu\Models\Records\InvoiceType;
 use josemmo\Verifactu\Services\AeatClient;
 
 final class AEATCommunicator {
@@ -131,20 +129,34 @@ final class AEATCommunicator {
         $issuerNif  = (string)($this->cfg['nif'] ?? ($this->cfg['issuer']['nif'] ?? ''));
         $issuerName = $this->resolveIssuerName();
 
-        $taxpayer = new Taxpayer($issuerNif);
+        // Identificador fiscal del emisor
+        $taxpayer = new FiscalIdentifier($issuerName, $issuerNif);
 
         $sysName = 'FacturaFlow';
-        $sysId   = substr(preg_replace('/[^0-9A-Za-z]/', '', (string)($this->cfg['aeatIdSistema'] ?? 'FF01')), 0, 4) ?: 'FF01';
+        // La lib exige id de 2 caracteres como máximo
+        $sysId   = substr(preg_replace('/[^0-9A-Za-z]/', '', (string)($this->cfg['aeatIdSistema'] ?? 'FF')), 0, 2) ?: 'FF';
         $sysVer  = (string)($this->cfg['aeatVersion'] ?? '1.0.0');
-        $sysInst = (int)($this->cfg['aeatNumeroInstalacion'] ?? 1);
+        $sysInst = (string)($this->cfg['aeatNumeroInstalacion'] ?? '1');
 
-        $system = new ComputerSystem($sysName, $sysId, $sysVer, $sysInst);
-        // Nota: otros flags del sistema (solo verifactu, multiOT) vienen con defaults razonables en la lib
+        // Rellenar todas las propiedades requeridas por el modelo
+        $system = new ComputerSystem();
+        $system->vendorName             = $issuerName ?: $issuerNif;
+        $system->vendorNif              = $issuerNif;
+        $system->name                   = $sysName;
+        $system->id                     = $sysId;
+        $system->version                = $sysVer;
+        $system->installationNumber     = (string)$sysInst;
+        $system->onlySupportsVerifactu  = false;
+        $system->supportsMultipleTaxpayers = false;
+        $system->hasMultipleTaxpayers   = false;
 
         // ---- Cliente AEAT ----
         $client = new AeatClient($system, $taxpayer, $p12Path, $p12Pass);
         $env  = strtolower((string)($this->cfg['aeatEnv'] ?? 'test'));
-        $client->setEnvironmentProduction($env === 'prod');
+        // La librería expone setProduction(true/false)
+        if (method_exists($client, 'setProduction')) {
+            $client->setProduction($env === 'prod');
+        }
 
         // ---- Construcción del RegistrationRecord ----
         [$importeTotal, $cuotaTotal, $details] = $this->buildBreakdownDetails($inv);
@@ -152,41 +164,53 @@ final class AEATCommunicator {
         $issueIso  = (string)($inv->issueDate ?? date('Y-m-d'));
         $issueDate = new \DateTimeImmutable($issueIso);
 
-        // Tipo de factura: si marcaste isRectificative=true tratamos como rectificativa
-        $isRect = (string)($inv->isRectificative ?? 'false') === 'true';
-        $invoiceType = $isRect ? InvoiceType::Rectificativa : InvoiceType::Completa;
-
-        $identification = new InvoiceIdentification(
-            $issuerNif,
-            (string)$inv->id,   // usamos tu id completo (SERIE-YYYY-NNNN)
-            $issueDate
-        );
-
-        $record = new RegistrationRecord();
-        $record->invoiceType           = $invoiceType;
-        $record->invoiceIdentification = $identification;
-        $record->totalTaxAmount        = round((float)$cuotaTotal, 2);
-        $record->totalAmount           = round((float)$importeTotal, 2);
-        $record->breakdownDetails      = $details;
-        $record->description           = (string)($inv->concept ?? $inv->description ?? '');
-
-        // Destinatario (si existe)
+        // Determinar destinatario (requerido salvo Simplificada/R5)
         $buyerName = $this->resolveBuyerName($inv);
         $buyerNif  = (string)($inv->client->nif ?? '');
-        if ($buyerName !== '' || $buyerNif !== '') {
-            $record->recipient = new FiscalIdentifier($buyerNif, $buyerName !== '' ? $buyerName : (string)($inv->client->name ?? ''));
+        $hasRecipient = ($buyerName !== '' && $buyerNif !== '');
+
+        // Tipo de factura según presencia de destinatario y si es rectificativa
+        $isRect = (string)($inv->isRectificative ?? 'false') === 'true';
+        if ($isRect) {
+            // Rectificativa normal requiere destinatario; si no hay, usa tipo R5 (rectificativa de simplificadas)
+            $invoiceType = $hasRecipient ? InvoiceType::R1 : InvoiceType::R5;
+        } else {
+            // Factura normal: si no hay destinatario, debe ser Simplificada
+            $invoiceType = $hasRecipient ? InvoiceType::Factura : InvoiceType::Simplificada;
+        }
+
+        $identification = new InvoiceIdentifier($issuerNif, (string)$inv->id, $issueDate);
+
+        $record = new RegistrationRecord();
+        $record->issuerName      = $issuerName !== '' ? $issuerName : $issuerNif;
+        $record->invoiceType     = $invoiceType;
+        $record->invoiceId       = $identification;
+        $record->totalTaxAmount  = $this->n2((float)$cuotaTotal);
+        $record->totalAmount     = $this->n2((float)$importeTotal);
+        $record->breakdown       = $details; // array<BreakdownDetails>
+        $record->description     = (string)($inv->concept ?? $inv->description ?? '');
+
+        // Destinatario (si existe)
+        if ($hasRecipient) {
+            $record->recipients[] = new FiscalIdentifier($buyerName, $buyerNif);
         }
 
         // Encadenamiento: tomamos última entrada del log Verifactu que NO sea esta misma
         $prev = $this->readLastVerifactuEntryExcluding((string)$inv->id);
         if (!empty($prev['invoiceId']) && !empty($prev['hash'])) {
-            $record->previousInvoiceId = (string)$prev['invoiceId'];
-            $record->previousHash      = (string)$prev['hash'];
+            // Crear identificador previo completo (NIF emisor + número + fecha)
+            $prevIssueIso = (string)($prev['issueDate'] ?? '');
+            $prevDate = $prevIssueIso !== '' ? new \DateTimeImmutable($prevIssueIso) : $issueDate;
+            $record->previousInvoiceId = new InvoiceIdentifier($issuerNif, (string)$prev['invoiceId'], $prevDate);
+            $record->previousHash      = strtoupper((string)$prev['hash']);
+        } else {
+            $record->previousInvoiceId = null;
+            $record->previousHash      = null;
         }
 
         // Huella actual y marca temporal
-        $record->hashedAt = new \DateTimeImmutable();          // cuando calculamos la huella
-        $hash = $record->calculateHash();                      // HEX UPPER, según librería
+        $record->hashedAt = new \DateTimeImmutable();
+        $record->hash     = $record->calculateHash();          // asigna la huella requerida por el esquema
 
         // Enviamos
         try {
@@ -306,31 +330,33 @@ final class AEATCommunicator {
             }
         }
 
-        $details = new BreakdownDetails();
+        $detailsArr = [];
         $cuotaTotal = 0.0;
         $baseTotal  = 0.0;
 
         foreach ($groups as $rate => [$base, $cuota]) {
-            $details->add(new BreakdownDetail(
-                TaxType::IVA,
-                RegimeType::C01,              // Régimen general
-                OperationType::S1,            // Sujeta y no exenta
-                round((float)$rate, 2),
-                round((float)$base, 2),
-                round((float)$cuota, 2)
-            ));
+            $bd = new BreakdownDetails();
+            $bd->taxType       = TaxType::IVA;
+            $bd->regimeType    = RegimeType::C01;     // Régimen general
+            $bd->operationType = OperationType::S1;   // Sujeta y no exenta
+            $bd->taxRate       = number_format((float)$rate, 2, '.', '');
+            $bd->baseAmount    = number_format((float)$base, 2, '.', '');
+            $bd->taxAmount     = number_format((float)$cuota, 2, '.', '');
+            $detailsArr[] = $bd;
             $baseTotal  += $base;
             $cuotaTotal += $cuota;
         }
 
         // Si no hay líneas, añade un bloque 0% para cumplir esquema
-        if ($details->count() === 0) {
-            $details->add(new BreakdownDetail(
-                TaxType::IVA,
-                RegimeType::C01,
-                OperationType::S1,
-                0.0, 0.0, 0.0
-            ));
+        if (count($detailsArr) === 0) {
+            $bd = new BreakdownDetails();
+            $bd->taxType       = TaxType::IVA;
+            $bd->regimeType    = RegimeType::C01;
+            $bd->operationType = OperationType::S1;
+            $bd->taxRate       = number_format(0, 2, '.', '');
+            $bd->baseAmount    = number_format(0, 2, '.', '');
+            $bd->taxAmount     = number_format(0, 2, '.', '');
+            $detailsArr[] = $bd;
         }
 
         $importeTotal = $baseTotal + $cuotaTotal;
@@ -341,7 +367,7 @@ final class AEATCommunicator {
             $importeTotal += (float)$inv->totalSuplidos;
         }
 
-        return [$importeTotal, $cuotaTotal, $details];
+        return [$importeTotal, $cuotaTotal, $detailsArr];
     }
 
     private function findFirstScalar(array $arr, array $keys) {
@@ -863,4 +889,3 @@ final class AEATCommunicator {
         @file_put_contents($dir.'/aeat_debug.log', '['.date('c')."] {$tag}: {$msg}\n", FILE_APPEND);
     }
 }
-

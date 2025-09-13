@@ -29,7 +29,7 @@ foreach ($products as $p) {
   }
 }
 ?>
-<h2>Nueva Factura</h2>
+<!-- Título removido por solicitud -->
 
 <div class="card">
   <form id="invoice-form">
@@ -427,4 +427,3 @@ document.addEventListener('DOMContentLoaded', () => {
   updateTotals();
 });
 </script>
-

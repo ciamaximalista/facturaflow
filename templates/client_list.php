@@ -1,5 +1,5 @@
 <?php /** templates/client_list.php */ ?>
-<h2>Gestión de Clientes</h2>
+<!-- Título removido por solicitud -->
 
 <div class="layout-container" style="display:flex;gap:2rem;align-items:flex-start;">
 
@@ -96,6 +96,16 @@
       <div class="form-group"><label for="postCode">Cód. Postal</label><input type="text" id="postCode" name="postCode" class="form-control" required></div>
 
       <div class="form-group">
+        <label for="residency">Residencia fiscal</label>
+        <select id="residency" name="residency" class="form-control">
+          <option value="resident_es" selected>Residente en España</option>
+          <option value="eu">Residente en la UE (no España)</option>
+          <option value="non_eu">No residente (fuera de la UE)</option>
+        </select>
+        <small class="help-text">Se trasladará a Facturae como ResidenceTypeCode.</small>
+      </div>
+
+      <div class="form-group">
         <label for="countryCode">País</label>
         <input type="text" id="countryCode" name="countryCode" class="form-control" value="ESP" required>
         <small class="help-text">Código país ISO 3166-1 alfa-3 (ej.: ESP, FRA, PRT)</small>
@@ -108,11 +118,24 @@
   <!-- LISTADO -->
   <div class="card list-card" style="flex:2;">
     <h3>Clientes Existentes</h3>
+    <?php
+      // Paginación: 16 por página
+      $perPage = 16;
+      $pageParam = 'p';
+      $currPage = max(1, (int)($_GET[$pageParam] ?? 1));
+      $all = is_array($clients) ? $clients : (is_iterable($clients) ? iterator_to_array($clients) : []);
+      $all = array_values($all);
+      $total = count($all);
+      $totalPages = max(1, (int)ceil($total / $perPage));
+      if ($currPage > $totalPages) { $currPage = $totalPages; }
+      $pageItems = array_slice($all, ($currPage - 1) * $perPage, $perPage);
+    ?>
     <table>
       <thead>
         <tr>
           <th>Nombre</th>
           <th>NIF/CIF</th>
+          <th>Residencia</th>
           <th>Domicilio</th>
           <th style="text-align:center;">DIRe</th>
           <th style="text-align:center;">DIR3</th>
@@ -120,9 +143,9 @@
         </tr>
       </thead>
       <tbody>
-        <?php if (empty($clients)): ?>
+        <?php if (empty($pageItems)): ?>
           <tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--text-light);">No hay clientes.</td></tr>
-        <?php else: foreach ($clients as $client):
+        <?php else: foreach ($pageItems as $client):
           $dire = trim((string)($client->dire ?? ''));
           $hasDire = $dire !== '';
           $oc = trim((string)($client->dir3OC ?? $client->dir3_accounting ?? ''));
@@ -134,6 +157,11 @@
           <tr>
             <td><?= htmlspecialchars((string)($client->name ?? $client->firstName ?? '')) ?></td>
             <td><?= htmlspecialchars((string)$client->nif) ?></td>
+            <?php
+              $res = (string)($client->residency ?? '');
+              $lbl = $res==='resident_es' ? 'ES' : ($res==='eu' ? 'UE' : ($res==='non_eu' ? 'No UE' : '—'));
+            ?>
+            <td><?= htmlspecialchars($lbl) ?></td>
             <td><?= htmlspecialchars((string)$client->address) ?><br><?= htmlspecialchars((string)$client->postCode) ?> <?= htmlspecialchars((string)$client->town) ?></td>
             <td class="dire-dot" style="text-align:center;" title="<?= $hasDire ? ('DIRe: '.htmlspecialchars($dire)) : 'Sin DIRe' ?>"><span class="dot <?= $hasDire ? 'green' : 'grey' ?>"></span></td>
             <td class="dir3-dot" style="text-align:center;" title="<?= htmlspecialchars($dir3Title) ?>"><span class="dot <?= $hasDir3 ? 'green' : 'grey' ?>"></span></td>
@@ -142,10 +170,49 @@
         <?php endforeach; endif; ?>
       </tbody>
     </table>
+    <?php if ($totalPages > 1): ?>
+      <div class="pager" style="display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; margin-top:.5rem;">
+        <?php $q = $_GET; ?>
+        <span>Mostrando <?= ($total===0?0:(($currPage-1)*$perPage+1)) ?>–<?= min($total, $currPage*$perPage) ?> de <?= $total ?></span>
+        <span style="opacity:.6;">·</span>
+        <?php if ($currPage > 1): ?>
+          <?php $q[$pageParam] = $currPage - 1; ?>
+          <a class="btn btn-sm" href="index.php?<?= htmlspecialchars(http_build_query($q)) ?>">« Anterior</a>
+        <?php else: ?>
+          <span class="btn btn-sm" style="opacity:.5; pointer-events:none;">« Anterior</span>
+        <?php endif; ?>
+
+        <?php
+          $blocks = [];
+          if ($totalPages <= 12) { $blocks[] = [1,$totalPages]; $useDots=false; }
+          else { $blocks[] = [1,8]; $blocks[] = [$totalPages-3,$totalPages]; $useDots=true; }
+          foreach ($blocks as $idx=>$range) {
+            [$a,$b] = $range;
+            if ($idx>0 && $useDots) echo '<span style="opacity:.6;">…</span>';
+            for ($n=$a; $n<=$b; $n++) {
+              $q[$pageParam] = $n;
+              if ($n === $currPage) echo '<span class="btn btn-sm" style="pointer-events:none; font-weight:600;">'.(int)$n.'</span>';
+              else echo '<a class="btn btn-sm" href="index.php?'.htmlspecialchars(http_build_query($q)).'">'.(int)$n.'</a>';
+            }
+          }
+        ?>
+
+        <?php if ($currPage < $totalPages): ?>
+          <?php $q[$pageParam] = $currPage + 1; ?>
+          <a class="btn btn-sm" href="index.php?<?= htmlspecialchars(http_build_query($q)) ?>">Siguiente »</a>
+        <?php else: ?>
+          <span class="btn btn-sm" style="opacity:.5; pointer-events:none;">Siguiente »</span>
+        <?php endif; ?>
+        <span style="opacity:.6;">· Página <?= $currPage ?> de <?= $totalPages ?></span>
+      </div>
+    <?php endif; ?>
   </div>
 </div>
 
 <style>
+/* Botones base celestes (consistentes con recibidas/enviadas) */
+.btn{ display:inline-block; padding:.4rem .7rem; border-radius:.4rem; background:#e6f4ff; color:#0b74c4; text-decoration:none; border:1px solid #b3dbff; cursor:pointer; }
+.btn:hover{ background:#dbeeff; }
 .radio-group-styled{display:flex;gap:.5rem}
 .radio-group-styled label{flex:1;padding:.75rem;border:1px solid #eee;border-radius:6px;cursor:pointer;text-align:center;transition:.2s}
 .radio-group-styled input{display:none}
@@ -250,4 +317,3 @@ window.__submitAddClient = function(ev){
   return false;
 };
 </script>
-

@@ -34,6 +34,7 @@
     flex-grow: 1;
     padding: 2.5rem;
     overflow-y: auto;
+    overflow-x: hidden;
     height: 100vh;
     box-sizing: border-box;
 }
@@ -42,3 +43,7 @@
     max-width: 1200px;
     margin: 0 auto;
 }
+/* Estructura general: body como contenedor flex */
+html, body { height: 100vh; }
+body { display: flex; overflow: hidden; }
+.main-content { overflow-y: auto; }

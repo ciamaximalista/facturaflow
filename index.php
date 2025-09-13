@@ -82,6 +82,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         header('Location: index.php');
         exit;
     }
+
+    if ($action === 'faceb2b_codes') {
+        $type = (string)($_POST['type'] ?? '');
+        $cfgLocal = file_exists($cfgPath) ? (json_decode((string)@file_get_contents($cfgPath), true) ?: []) : [];
+        $cacheDir = __DIR__ . '/data';
+        $cacheFile = $cacheDir . '/faceb2b_codes_' . preg_replace('~[^a-z0-9._-]+~i','_', $type ?: 'all') . '.json';
+        try {
+            $fb = new FaceB2BClient((array)($cfgLocal['faceb2b'] ?? []));
+            $res = $fb->getCodes($type);
+            $items = (array)($res['items'] ?? []);
+            if (!empty($res['success']) && !empty($items)) {
+                if (!is_dir($cacheDir)) @mkdir($cacheDir, 0775, true);
+                @file_put_contents($cacheFile, json_encode(['items'=>$items], JSON_UNESCAPED_UNICODE));
+                json_response(['success'=>true, 'items'=>$items], 200);
+            }
+            // Fallback a caché local si existe
+            if (is_file($cacheFile)) {
+                $cached = json_decode((string)@file_get_contents($cacheFile), true) ?: [];
+                $cItems = (array)($cached['items'] ?? []);
+                if (!empty($cItems)) {
+                    json_response(['success'=>true, 'items'=>$cItems, 'cached'=>true], 200);
+                }
+            }
+            $msg = (string)($res['message'] ?? 'No se pudo cargar el catálogo de motivos');
+            json_response(['success'=>false,'message'=>$msg], 200);
+        } catch (Throwable $e) {
+            // Fallback a caché si hay error
+            if (is_file($cacheFile)) {
+                $cached = json_decode((string)@file_get_contents($cacheFile), true) ?: [];
+                $cItems = (array)($cached['items'] ?? []);
+                if (!empty($cItems)) {
+                    json_response(['success'=>true, 'items'=>$cItems, 'cached'=>true], 200);
+                }
+            }
+            json_response(['success'=>false,'message'=>'Error: '.$e->getMessage()], 200);
+        }
+    }
+
+    // Eliminado: endpoints de anulación (solicitar/listar/decidir) deshabilitados por petición
 }
 
 // ----------------- AUTENTICACIÓN: GATE DE ENTRADA -----------------
@@ -103,6 +142,8 @@ $map = [
     'create_invoice' => 'create_invoice', 'new_invoice' => 'create_invoice', 'nueva_factura' => 'create_invoice', 'emitir_factura' => 'create_invoice',
     'rectify_prompt' => 'rectify_prompt', 'rectificar' => 'rectify_prompt',
     'export_facturae' => 'export_facturae', 'export_xsig' => 'export_facturae', 'export_factura_e' => 'export_facturae',
+    'print_invoice' => 'print_invoice', 'pdf_invoice' => 'print_invoice', 'pdf_factura' => 'print_invoice',
+    'print_received' => 'print_received', 'pdf_received' => 'print_received',
     'clients' => 'clients', 'clientes' => 'clients',
     'products' => 'products', 'productos' => 'products', 'product_list' => 'products',
     'settings' => 'settings', 'ajustes' => 'settings', 'configuracion' => 'settings', 'mis_datos' => 'settings', 'my_data' => 'settings',
@@ -207,9 +248,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     json_response(['success' => true, 'message' => 'Factura enviada a FACeB2B.', 'registrationCode' => $registrationCode]);
                 } else {
                     $raw = $result['response'] ?? [];
-                    $msg = $raw['resultStatus']['message']
-                        ?? $raw['result']['status']['message']
-                        ?? 'FACeB2B respondió sin código de registro.';
+                    // Prioriza mensaje interno de FaceB2BClient si existe
+                    $msg = $result['message']
+                        ?? ($raw['resultStatus']['message']
+                            ?? ($raw['result']['status']['message']
+                                ?? 'FACeB2B respondió sin código de registro.'));
                     json_response([
                         'success' => false,
                         'message' => $msg,
@@ -324,6 +367,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $buyerData['name']          = (string)($clientNorm['name'] ?? '');
                 }
 
+                // Residencia fiscal (R/U/E) → ResidenceTypeCode
+                $residency = isset($clientNorm['residency']) ? (string)$clientNorm['residency'] : '';
+                if ($residency === 'resident_es') {
+                    $buyerData['countryCode'] = 'ESP';
+                } elseif ($residency === 'eu') {
+                    $buyerData['isEuropeanUnionResident'] = true;
+                } elseif ($residency === 'non_eu') {
+                    $buyerData['isEuropeanUnionResident'] = false;
+                }
+
                 // DIR3 canónicos (con fallback)
                 $buyerData['face_dir3_oc'] = $pick($clientNorm, ['face_dir3_oc','dir3_oc','oc','OC'], $dir3OC);
                 $buyerData['face_dir3_og'] = $pick($clientNorm, ['face_dir3_og','dir3_og','og','OG'], $dir3OG);
@@ -372,11 +425,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     ];
                 }
 
-                // Genera y firma
+                // Genera y firma el Facturae (.xsig)
                 $outputDir = __DIR__ . '/data/facturae_exports/';
                 @mkdir($outputDir, 0775, true);
                 $facturaeGenerator = new FacturaeGenerator();
-                if (!$xmlPath || !is_file($xmlPath)) {
+                $meta    = $facturaeGenerator->generateWithMeta($invoiceArray, $outputDir);
+                $xmlPath = (string)($meta['path'] ?? '');
+                if ($xmlPath === '' || !is_file($xmlPath)) {
                     json_response(['success'=>false, 'message'=>'No se pudo generar el Facturae (.xsig)'], 500);
                 }
 
@@ -469,6 +524,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 break;
             }
 
+            case 'sync_face': {
+                // Sincroniza estado de facturas enviadas a FACe a partir del número de registro
+                $oneId = trim((string)($_POST['id'] ?? $_POST['invoice_id'] ?? ''));
+                $im = new InvoiceManager();
+                // Carga config opcional para Face Providers (data/face.json o /var/www/html/cifra/face.json)
+                if (!class_exists('FaceProvidersClient')) {
+                    @require_once __DIR__ . '/src/FaceProvidersClient.php';
+                }
+                $faceCfg = [];
+                $cfg = file_exists($cfgPath) ? json_decode((string)@file_get_contents($cfgPath), true) : [];
+                if (is_array($cfg)) {
+                    // Reutiliza p12 del sistema si no hay otro
+                    $issuer = (array)($cfg['issuer'] ?? $cfg);
+                    if (!empty($issuer['certificatePath'])) $faceCfg['p12_path'] = $issuer['certificatePath'];
+                    if (!empty($issuer['certPassword']))     $faceCfg['p12_pass'] = $issuer['certPassword'];
+                }
+                $client = new FaceProvidersClient($faceCfg);
+
+                $targets = [];
+                if ($oneId !== '') {
+                    $x = $im->getInvoiceById($oneId);
+                    if ($x) $targets[] = $x;
+                } else {
+                    $targets = $im->getAllInvoices(null);
+                }
+
+                $updated = 0; $errors = 0; $skipped = 0;
+                foreach ($targets as $x) {
+                    $id = (string)($x->id ?? '');
+                    $reg = trim((string)($x->face->registerNumber ?? ''));
+                    if ($reg === '') { $skipped++; continue; }
+                    try {
+                        $res = $client->getInvoice($reg);
+                        if (!empty($res['success']) && is_array($res['response'])) {
+                            $ok = $im->setFaceStatusFromApi($id, $res['response']);
+                            if ($ok) $updated++; else $errors++;
+                        } else {
+                            $errors++;
+                        }
+                    } catch (\Throwable $e) { $errors++; }
+                }
+
+                json_response(['success'=>true, 'updated_count'=>$updated, 'skipped_count'=>$skipped, 'error_count'=>$errors]);
+                break;
+            }
+
             // --- Facturas recibidas ---
             case 'upload_received': {
                 if (!isset($_FILES['receivedFile'])) {
@@ -493,7 +594,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     json_response(['success'=>false,'message'=>'Parámetros insuficientes.'], 400);
                 }
                 $rm = new ReceivedManager();
-                $res = $rm->updateStatus($id, $action, $reason, $date);
+                $opts = [];
+                if ($reason !== null && $reason !== '') $opts['reason'] = $reason;
+                if ($date !== null && $date !== '') $opts['paymentDate'] = $date;
+                $res = $rm->updateStatus($id, $action, $opts);
                 if (empty($res['success'])) {
                     json_response(
                         ['success' => false, 'message' => ($res['message'] ?? 'No se pudo actualizar el estado.')],
@@ -1009,6 +1113,16 @@ if ($page === 'export_facturae') {
         $buyerData['name']          = (string)($clientNorm['name'] ?? '');
     }
 
+    // Residencia fiscal (R/U/E)
+    $residency = isset($clientNorm['residency']) ? (string)$clientNorm['residency'] : '';
+    if ($residency === 'resident_es') {
+        $buyerData['countryCode'] = 'ESP';
+    } elseif ($residency === 'eu') {
+        $buyerData['isEuropeanUnionResident'] = true;
+    } elseif ($residency === 'non_eu') {
+        $buyerData['isEuropeanUnionResident'] = false;
+    }
+
     // Canoniza claves DIR3 hacia face_dir3_oc/og/ut
     $buyerData['face_dir3_oc'] = strtoupper(trim($pick($clientNorm, ['face_dir3_oc', 'dir3_oc', 'oc', 'OC'])));
     $buyerData['face_dir3_og'] = strtoupper(trim($pick($clientNorm, ['face_dir3_og', 'dir3_og', 'og', 'OG'])));
@@ -1067,6 +1181,8 @@ if ($page === 'export_facturae') {
         $facturaeGenerator = new FacturaeGenerator();
         $outputDir = __DIR__ . '/data/facturae_exports/';
         @mkdir($outputDir, 0775, true);
+        // Genera y devuelve la ruta al fichero .xsig
+        $filePath = $facturaeGenerator->generate($invoiceArray, $outputDir);
         if (!$filePath || !is_file($filePath)) {
             header('Content-Type: text/plain; charset=utf-8');
             die("Error al generar la Factura-e: fichero no creado.");
@@ -1124,7 +1240,8 @@ switch ($page) {
     case 'invoice_list': {
         $im = new InvoiceManager();
         $invoices = $im->getAllInvoices();
-        $sort = $_GET['sort'] ?? 'series';
+        // Orden por defecto: fecha (más reciente primero)
+        $sort = $_GET['sort'] ?? 'date';
         if ($sort === 'date') {
             usort($invoices, function($a, $b) {
                 $timeA = isset($a->creationTimestamp) ? strtotime((string)$a->creationTimestamp) : strtotime((string)$a->issueDate);
@@ -1147,6 +1264,35 @@ switch ($page) {
         $issuer = file_exists($cfgPath) ? (array)json_decode((string)file_get_contents($cfgPath), true) : [];
         include __DIR__ . '/templates/view_invoice.php';
         break;
+    }
+
+    case 'print_invoice': {
+        $invoiceId = (string)($_GET['id'] ?? '');
+        $im = new InvoiceManager();
+        $invoice = $invoiceId !== '' ? $im->getInvoiceById($invoiceId) : null;
+        $issuer = file_exists($cfgPath) ? (array)json_decode((string)file_get_contents($cfgPath), true) : [];
+        if (!$invoice) {
+            header('Content-Type: text/plain; charset=utf-8');
+            die('Factura no encontrada');
+        }
+        // Render HTML for PDF
+        ob_start();
+        include __DIR__ . '/templates/pdf_invoice.php';
+        $html = ob_get_clean();
+        // Generate PDF using Dompdf
+        $options = new Dompdf\Options();
+        $options->set('isRemoteEnabled', true);
+        $options->set('isHtml5ParserEnabled', true);
+        $dompdf = new Dompdf\Dompdf($options);
+        $dompdf->loadHtml($html, 'UTF-8');
+        $dompdf->setPaper('A4', 'portrait');
+        $dompdf->render();
+        $fileName = 'factura-' . preg_replace('~[^A-Za-z0-9_-]+~','_', (string)$invoice->id) . '.pdf';
+        header('Content-Type: application/pdf');
+        header('Cache-Control: private, max-age=0, must-revalidate');
+        header('Pragma: public');
+        $dompdf->stream($fileName, ['Attachment' => false]);
+        exit;
     }
 
     case 'create_invoice': {
@@ -1271,6 +1417,32 @@ switch ($page) {
         break;
     }
 
+    case 'print_received': {
+        $id = $_GET['id'] ?? '';
+        $rm = new ReceivedManager();
+        $rv = $rm->getViewDataById((string)$id);
+        if (empty($rv) || empty($rv['success'])) {
+            header('Content-Type: text/plain; charset=utf-8');
+            die('Factura recibida no disponible');
+        }
+        ob_start();
+        include __DIR__ . '/templates/pdf_received.php';
+        $html = ob_get_clean();
+        $options = new Dompdf\Options();
+        $options->set('isRemoteEnabled', true);
+        $options->set('isHtml5ParserEnabled', true);
+        $dompdf = new Dompdf\Dompdf($options);
+        $dompdf->loadHtml($html, 'UTF-8');
+        $dompdf->setPaper('A4', 'portrait');
+        $dompdf->render();
+        $fileName = 'recibida-' . preg_replace('~[^A-Za-z0-9_-]+~','_', (string)($rv['header']['number'] ?? $id)) . '.pdf';
+        header('Content-Type: application/pdf');
+        header('Cache-Control: private, max-age=0, must-revalidate');
+        header('Pragma: public');
+        $dompdf->stream($fileName, ['Attachment' => false]);
+        exit;
+    }
+
     default: {
         $im = new InvoiceManager();
         $invoices = $im->getAllInvoices();
@@ -1286,4 +1458,3 @@ $content = ob_get_clean();
 
 // ----------------- RENDERIZADO FINAL CON EL LAYOUT -----------------
 include __DIR__ . '/templates/layout.php';
-

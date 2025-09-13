@@ -6,7 +6,8 @@ if (empty($rv) || empty($rv['success'])) {
     echo '<div class="card"><h2>Error</h2>';
     echo '<p>' . htmlspecialchars($msg) . '</p>';
     if ($idQ !== '') echo '<p><small>ID: ' . htmlspecialchars($idQ) . '</small></p>';
-    echo '<p><a href="index.php?page=received" class="btn">Volver al listado</a></p></div>';
+    // Enlace redundante eliminado: el layout superior ya ofrece navegación contextual
+    echo '</div>';
     return;
 }
 
@@ -25,6 +26,7 @@ $rid = $h['id'] ?? ($meta['id'] ?? ($_GET['id'] ?? ''));
 $acceptedAt = isset($meta['acceptedAt']) ? (string)$meta['acceptedAt'] : '';
 $rejectedAt = isset($meta['rejectedAt']) ? (string)$meta['rejectedAt'] : '';
 $paymentDate= isset($meta['paymentDate'])? (string)$meta['paymentDate']: '';
+$canceledAt = isset($meta['canceledAt']) ? (string)$meta['canceledAt'] : '';
 
 // Utilidades
 $fmtDate = function(?string $s): string {
@@ -42,16 +44,29 @@ $qrString = (string)($meta['qrString'] ?? $meta['qr'] ?? '');
 $fileRel = (string)($rv['fileRel'] ?? '');
 $hashes = ['sha1'=>'','sha256'=>'','sha512'=>''];
 if ($fileRel !== '') {
-    $fullFile = realpath(dirname(__DIR__) . '/../' . $fileRel);
+    // Corrige ruta absoluta al fichero original: partimos del raíz del proyecto
+    // (__DIR__ apunta a templates/, por lo que dirname(__DIR__) es la carpeta raíz).
+    $fullFile = realpath(dirname(__DIR__) . '/' . $fileRel);
     if ($fullFile && is_file($fullFile)) {
         $hashes['sha1']   = hash_file('sha1',   $fullFile) ?: '';
         $hashes['sha256'] = hash_file('sha256', $fullFile) ?: '';
         $hashes['sha512'] = hash_file('sha512', $fullFile) ?: '';
-        if ($qrString === '') {
-            $raw = (string)@file_get_contents($fullFile);
-            if ($raw !== '') {
-                if (preg_match('/<(?:QR|QRCode|QRString)>([^<]+)<\/(?:QR|QRCode|QRString)>/i', $raw, $m)) {
-                    $qrString = trim((string)$m[1]);
+        $raw = (string)@file_get_contents($fullFile);
+        if ($raw !== '') {
+            // Extrae QR de etiquetas dedicadas
+            if ($qrString === '' && preg_match('/<(?:QR|QRCode|QRString)>([^<]+)<\/(?:QR|QRCode|QRString)>/i', $raw, $m)) {
+                $qrString = trim((string)$m[1]);
+            }
+            // Extrae QR/Hash de InvoiceAdditionalInformation si viene "Hash: ... QR: ..."
+            if (preg_match('/<InvoiceAdditionalInformation>([^<]+)</i', $raw, $mInfo)) {
+                $infoTxt = trim((string)$mInfo[1]);
+                if ($qrString === '' && preg_match('/QR:\s*([^\r\n]+)/u', $infoTxt, $mQ)) {
+                    $qrString = trim($mQ[1]);
+                    // Decodifica entidades XML (&amp; -> &)
+                    $qrString = html_entity_decode($qrString, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                }
+                if (empty($meta['vfHash']) && preg_match('/Hash:\s*([0-9A-Fa-f]{32,64})/u', $infoTxt, $mH)) {
+                    $meta['vfHash'] = strtoupper($mH[1]);
                 }
             }
         }
@@ -91,10 +106,14 @@ $stampText = match ($stLower) {
         
     </h2>
     <div class="actions-right">
+        <a href="index.php?page=print_received&id=<?php echo urlencode((string)$rid); ?>" class="btn">PDF para imprimir</a>
         <?php if (!empty($rv['fileRel'])): ?>
             <a href="<?php echo htmlspecialchars($rv['fileRel']); ?>" class="btn">Descargar original</a>
         <?php endif; ?>
-        <a href="index.php?page=received" class="btn">Volver al listado</a>
+        <!-- Botonera fuera del card -->
+        <button type="button" class="btn btn-success" id="btn-accept" data-id="<?php echo htmlspecialchars($rid); ?>">Aceptar</button>
+        <button type="button" class="btn btn-danger"  id="btn-reject" data-id="<?php echo htmlspecialchars($rid); ?>">Rechazar</button>
+        <button type="button" class="btn btn-primary" id="btn-paid"   data-id="<?php echo htmlspecialchars($rid); ?>">Marcar pagada</button>
     </div>
 </div>
 
@@ -104,12 +123,15 @@ $stampText = match ($stLower) {
             <p>
                 <strong><?php echo htmlspecialchars($seller['name'] ?? ''); ?></strong><br>
                 NIF: <?php echo htmlspecialchars($seller['nif'] ?? ''); ?><br>
-                <?php if (!empty($seller['addr'])): ?>
-                    <?php echo htmlspecialchars($seller['addr']); ?><br>
-                    <?php echo htmlspecialchars(($seller['pc'] ?? '').' '.($seller['town'] ?? '')); ?>
-                    <?php if (!empty($seller['prov'])): echo ', '.htmlspecialchars($seller['prov']); endif; ?>
-                    <?php if (!empty($seller['cc'])): echo ' ('.htmlspecialchars($seller['cc']).')'; endif; ?>
-                <?php endif; ?>
+                <?php
+                  $addrPieces = array_filter([
+                    $seller['addr'] ?? '',
+                    trim(((string)($seller['pc'] ?? '')).' '.((string)($seller['town'] ?? ''))),
+                    $seller['prov'] ?? '',
+                  ]);
+                  if ($addrPieces) echo htmlspecialchars(implode(', ', $addrPieces));
+                  if (!empty($seller['cc'])) echo ' ('.htmlspecialchars($seller['cc']).')';
+                ?>
             </p>
         </div>
         <div class="client-details">
@@ -117,18 +139,49 @@ $stampText = match ($stLower) {
             <p>
                 <strong><?php echo htmlspecialchars($buyer['name'] ?? ''); ?></strong><br>
                 NIF: <?php echo htmlspecialchars($buyer['nif'] ?? ''); ?><br>
-                <?php if (!empty($buyer['addr'])): ?>
-                    <?php echo htmlspecialchars($buyer['addr']); ?><br>
-                    <?php echo htmlspecialchars(($buyer['pc'] ?? '').' '.($buyer['town'] ?? '')); ?>
-                    <?php if (!empty($buyer['prov'])): echo ', '.htmlspecialchars($buyer['prov']); endif; ?>
-                    <?php if (!empty($buyer['cc'])): echo ' ('.htmlspecialchars($buyer['cc']).')'; endif; ?>
-                <?php endif; ?>
+                <?php
+                  $baddrPieces = array_filter([
+                    $buyer['addr'] ?? '',
+                    trim(((string)($buyer['pc'] ?? '')).' '.((string)($buyer['town'] ?? ''))),
+                    $buyer['prov'] ?? '',
+                  ]);
+                  if ($baddrPieces) echo htmlspecialchars(implode(', ', $baddrPieces));
+                  if (!empty($buyer['cc'])) echo ' ('.htmlspecialchars($buyer['cc']).')';
+                ?>
             </p>
         </div>
-        <div class="action-buttons">
-            <button type="button" class="btn btn-success" id="btn-accept" data-id="<?php echo htmlspecialchars($rid); ?>">Aceptar</button>
-            <button type="button" class="btn btn-danger"  id="btn-reject" data-id="<?php echo htmlspecialchars($rid); ?>">Rechazar</button>
-            <button type="button" class="btn btn-primary" id="btn-paid"   data-id="<?php echo htmlspecialchars($rid); ?>">Marcar pagada</button>
+        <!-- QR de la factura recibido por FACeB2B -->
+        <div class="qr-host" style="display:flex;align-items:center;justify-content:center;">
+            <?php
+              $qrImgB64 = '';
+              // Si ya viene desde el parser, úsalo
+              if (!empty($meta['qrPngB64'])) {
+                  $qrImgB64 = (string)$meta['qrPngB64'];
+              }
+              // Si no, generamos desde el texto
+              if ($qrImgB64 === '' && $qrString !== '') {
+                  try {
+                      $opts = new \chillerlan\QRCode\QROptions([
+                          'eccLevel'   => \chillerlan\QRCode\QRCode::ECC_M,
+                          'outputType' => \chillerlan\QRCode\QRCode::OUTPUT_IMAGE_PNG,
+                          'scale'      => 4,
+                      ]);
+                      $qrPng = (new \chillerlan\QRCode\QRCode($opts))->render($qrString);
+                      if (is_string($qrPng) && $qrPng !== '') {
+                          if (preg_match('~^data:image/[^;]+;base64,~i', $qrPng)) {
+                              $qrImgB64 = substr($qrPng, strpos($qrPng, ',') + 1) ?: '';
+                          } else {
+                              $qrImgB64 = base64_encode($qrPng);
+                          }
+                      }
+                  } catch (\Throwable $e) { $qrImgB64 = ''; }
+              }
+              if ($qrImgB64 !== '') {
+                  echo '<img alt="QR" style="height:120px; image-rendering:crisp-edges;" src="data:image/png;base64,'.htmlspecialchars($qrImgB64).'" />';
+              } else {
+                  echo '<div class="qr-missing">QR no disponible</div>';
+              }
+            ?>
         </div>
     </header>
     
@@ -221,28 +274,29 @@ $stampText = match ($stLower) {
                 <div class="verify-value"><code class="wrap"><?= htmlspecialchars($qrString) ?></code></div>
               </div>
             <?php endif; ?>
-            <div class="verify-row">
-              <div class="verify-label">SHA-256:</div>
-              <div class="verify-value"><code class="wrap"><?= htmlspecialchars($hashes['sha256']) ?></code></div>
-            </div>
-            <div class="verify-row">
-              <div class="verify-label">SHA-1:</div>
-              <div class="verify-value"><code class="wrap"><?= htmlspecialchars($hashes['sha1']) ?></code></div>
-            </div>
-            <div class="verify-row">
-              <div class="verify-label">SHA-512:</div>
-              <div class="verify-value"><code class="wrap"><?= htmlspecialchars($hashes['sha512']) ?></code></div>
-            </div>
+
+            <!-- No mostramos hashes genéricos; basta con VF hash + QR según regulación -->
           </div>
         </div>
         <div class="totals-details">
             <p><strong>Base Imponible:</strong> <?php echo number_format((float)$totals['base'], 2, ',', '.'); ?> €</p>
             <p><strong>Total IVA:</strong> <?php echo number_format((float)$totals['vat'], 2, ',', '.'); ?> €</p>
-            <?php if (isset($totals['reimbursables'])): ?>
-                <p><strong>Suplidos:</strong> <?php echo number_format((float)$totals['reimbursables'], 2, ',', '.'); ?> €</p>
+            <?php if (!empty($totals['reimb'])): ?>
+                <p><strong>Suplidos:</strong> <?php echo number_format((float)$totals['reimb'], 2, ',', '.'); ?> €</p>
             <?php endif; ?>
-            <?php if (!empty($totals['irpf'])): ?>
-                <p><strong>Retenciones:</strong> <?php echo number_format((float)$totals['irpf'], 2, ',', '.'); ?> €</p>
+            <?php
+              $isPF = !empty($seller['isIndividual']);
+              $showIrpf = $isPF && ( (!empty($totals['hasIrpf'])) || (!empty($totals['irpf']) && (float)$totals['irpf'] !== 0.0) );
+              if ($showIrpf):
+                $irpfPct = isset($totals['irpfRate']) ? (float)$totals['irpfRate'] : 0.0;
+            ?>
+                <p>
+                  <strong>Retenciones IRPF:</strong>
+                  <?php echo number_format((float)$totals['irpf'], 2, ',', '.'); ?> €
+                  <?php if ($irpfPct > 0): ?>
+                    (<?php echo number_format($irpfPct, 2, ',', '.'); ?>%)
+                  <?php endif; ?>
+                </p>
             <?php endif; ?>
             <h3 class="total-amount">Total Factura: <?php echo number_format((float)$totals['total'], 2, ',', '.'); ?> €</h3>
         </div>
@@ -253,14 +307,14 @@ $stampText = match ($stLower) {
 <div class="modal" id="modal-reject" hidden>
   <div class="modal-content">
     <h3>Rechazar factura</h3>
-    <p>Indica el motivo del rechazo:</p>
-    <textarea id="reject-reason" rows="4" class="form-control" placeholder="Motivo de rechazo" required></textarea>
+    <p>Explica el motivo del rechazo (se registrará en el sistema y se notificará a FACeB2B cuando sea posible):</p>
+    <textarea id="reject-reason" rows="4" class="form-control" placeholder="Describe el motivo del rechazo" required></textarea>
     <div class="modal-actions">
       <button class="btn btn-danger" id="confirm-reject">Rechazar</button>
       <button class="btn" id="close-reject">Cancelar</button>
     </div>
   </div>
-</div>
+ </div>
 
 <!-- Modal Pagada -->
 <div class="modal" id="modal-paid" hidden>
@@ -340,6 +394,7 @@ $stampText = match ($stLower) {
 .stamp-pendiente-pago  { color:#111827; } /* negro */
 .stamp-rechazada       { color:#dc2626; } /* rojo */
 .stamp-pagada          { color:#2563eb; } /* azul */
+.stamp-anulada         { color:#6b7280; } /* gris */
 
 /* Verificación */
 .verify-box{ background:#f9fafb; border:1px solid #e5e7eb; border-radius:.5rem; padding:.8rem 1rem; }
@@ -409,5 +464,82 @@ document.addEventListener('DOMContentLoaded', () => {
   const showNotice = (cls, html) => {
     const d = document.createElement('div');
     d.className = 'alert ' + cls;
-    d.innerHTML
+    d.innerHTML = html;
+    if (alertBox) alertBox.appendChild(d);
+    setTimeout(() => { d.remove(); }, 5000);
+  };
 
+  const postStatus = async (statusAction, extra = {}) => {
+    const fd = new FormData();
+    fd.append('action', 'update_received_status');
+    fd.append('id', id || '');
+    fd.append('statusAction', statusAction);
+    if (extra.reason) fd.append('reason', String(extra.reason));
+    if (extra.paymentDate) fd.append('paymentDate', String(extra.paymentDate));
+    const res = await fetch('index.php', { method: 'POST', body: fd, credentials: 'same-origin' });
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); } catch(e) { throw new Error('Respuesta no válida'); }
+    if (!res.ok || !data.success) {
+      throw new Error((data && data.message) ? data.message : 'No se pudo actualizar el estado');
+    }
+    return data;
+  };
+
+  // Aceptar → pasa a "Pendiente de pago" y notifica FACeB2B
+  btnAccept?.addEventListener('click', async () => {
+    try{
+      btnAccept.disabled = true;
+      const data = await postStatus('accepted');
+      showNotice('alert-success', 'Factura aceptada. ' + (data.notice || ''));
+      setStamp('Pendiente de pago');
+    }catch(err){
+      showNotice('alert-danger', 'Error al aceptar: ' + (err.message || err));
+    }finally{
+      btnAccept.disabled = false;
+    }
+  });
+
+  // Abrir/cerrar modal Rechazo
+  btnReject?.addEventListener('click', async () => {
+    modalReject.removeAttribute('hidden');
+    rejectReason?.focus();
+  });
+  closeReject?.addEventListener('click', () => { modalReject.setAttribute('hidden',''); });
+  confirmReject?.addEventListener('click', async () => {
+    const reason = (rejectReason?.value || '').trim();
+    if (!reason) { rejectReason?.focus(); return; }
+    try{
+      confirmReject.disabled = true;
+      const data = await postStatus('rejected', { reason });
+      showNotice('alert-success', 'Factura rechazada. ' + (data.notice || ''));
+      setStamp('Rechazada', new Date().toISOString());
+      modalReject.setAttribute('hidden','');
+    }catch(err){
+      showNotice('alert-danger', 'Error al rechazar: ' + (err.message || err));
+    }finally{
+      confirmReject.disabled = false;
+    }
+  });
+
+  // Abrir/cerrar modal Pagada
+  btnPaid?.addEventListener('click', () => { modalPaid.removeAttribute('hidden'); paidDate.focus(); });
+  closePaid?.addEventListener('click', () => { modalPaid.setAttribute('hidden',''); });
+  confirmPaid?.addEventListener('click', async () => {
+    const ymd = (paidDate?.value || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) { paidDate.focus(); return; }
+    try{
+      confirmPaid.disabled = true;
+      const data = await postStatus('paid', { paymentDate: ymd });
+      showNotice('alert-success', 'Factura marcada como pagada. ' + (data.notice || ''));
+      setStamp('Pagada', ymd);
+      modalPaid.setAttribute('hidden','');
+    }catch(err){
+      showNotice('alert-danger', 'Error al marcar pagada: ' + (err.message || err));
+    }finally{
+      confirmPaid.disabled = false;
+    }
+  });
+
+});
+</script>

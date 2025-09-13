@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 use josemmo\Facturae\Facturae;
 use josemmo\Facturae\FacturaeParty;
+use josemmo\Facturae\FacturaeItem;
+use josemmo\Facturae\FacturaeCentre;
+use josemmo\Facturae\ReimbursableExpense;
 
 final class FacturaeGenerator {
     /** @var array<string,mixed> */
@@ -49,6 +52,7 @@ final class FacturaeGenerator {
         $series     = trim((string)($input['series']    ?? ''));
         $number     = trim((string)($input['number']    ?? ''));
         $issueDate  = trim((string)($input['issueDate'] ?? date('Y-m-d')));
+        // Nota: En Facturae 1.8.3 no existe setCurrency; se asume EUR
         $currency   = trim((string)($input['currency']  ?? 'EUR'));
         $fileSuffix = trim((string)($input['fileSuffix'] ?? 'FACE')); // index usa 'FACE' o 'EXPORT'
 
@@ -66,10 +70,9 @@ final class FacturaeGenerator {
         ]);
 
         // ====== 2) Construcción de Facturae ======
-        $fac = new Facturae();                // La librería ya pone 3.2.1 por defecto en versiones recientes
+        $fac = new Facturae();                // La librería pone 3.2.1 por defecto en 1.8.3
         $fac->setNumber($series, $number);    // Serie y número
-        $fac->setIssueDate(new \DateTime($issueDate));
-        $fac->setCurrency($currency);
+        $fac->setIssueDate($issueDate);       // 1.8.3 acepta string o timestamp
 
         // 2.1 Seller / Buyer
         $seller = $this->buildPartyFromInput($input['seller'] ?? null, 'seller');
@@ -83,13 +86,24 @@ final class FacturaeGenerator {
         $og = strtoupper(trim((string)($input['buyer']['face_dir3_og'] ?? $input['buyer']['centres']['OG'] ?? '')));
         $ut = strtoupper(trim((string)($input['buyer']['face_dir3_ut'] ?? $input['buyer']['centres']['UT'] ?? '')));
         if ($oc !== '' || $og !== '' || $ut !== '') {
-            // No hay API específica para centros en la lib; dejamos huella en AdditionalData
-            $fac->addAdditionalProperty('Buyer-DIR3-OC', $oc);
-            $fac->addAdditionalProperty('Buyer-DIR3-OG', $og);
-            $fac->addAdditionalProperty('Buyer-DIR3-UT', $ut);
+            // Mapear DIR3 a centros administrativos del comprador
+            $centres = [];
+            if ($oc !== '') $centres[] = new FacturaeCentre(['code'=>$oc, 'role'=>FacturaeCentre::ROLE_CONTABLE,   'name'=>'OC']);
+            if ($og !== '') $centres[] = new FacturaeCentre(['code'=>$og, 'role'=>FacturaeCentre::ROLE_GESTOR,     'name'=>'OG']);
+            if ($ut !== '') $centres[] = new FacturaeCentre(['code'=>$ut, 'role'=>FacturaeCentre::ROLE_TRAMITADOR, 'name'=>'UT']);
+            $buyer->centres = array_merge($buyer->centres ?? [], $centres);
         }
-        if ($hasRU) {
-            $fac->addAdditionalProperty('FACeB2B-ReceivingUnit', (string)$input['receivingUnit']);
+        if ($hasRU && is_string($input['receivingUnit'])) {
+            // DIRe (FACeB2B) vía extensión Fb2b si está disponible
+            try {
+                $fb2b = $fac->getExtension('Fb2b');
+                $fb2b->setReceiver(new FacturaeCentre(['code'=>(string)$input['receivingUnit'], 'role'=>FacturaeCentre::ROLE_B2B_BUYER]));
+                if (!empty($contractRef = (string)($input['receiverContractReference'] ?? ''))) {
+                    $fb2b->setContractReference($contractRef);
+                }
+            } catch (\Throwable $e) {
+                // Si la extensión no existe, continuamos sin romper el flujo
+            }
         }
 
         // 2.3 Líneas
@@ -97,7 +111,14 @@ final class FacturaeGenerator {
             throw new \InvalidArgumentException('La factura debe contener al menos una línea de concepto.');
         }
 
+        // Precalcular IRPF global (si aplica) y luego construir las líneas con FacturaeItem
         $irpfMax = 0.0;
+        foreach (($input['items'] ?? []) as $i) {
+            $irpfLine = (float)($i['irpfRate'] ?? 0.0);
+            if ($irpfLine > $irpfMax) $irpfMax = $irpfLine;
+        }
+        $irpfRate = isset($input['irpfRate']) ? (float)$input['irpfRate'] : $irpfMax;
+
         foreach (($input['items'] ?? []) as $i) {
             $desc = (string)($i['description'] ?? '');
             $qty  = (float)($i['quantity'] ?? 0.0);
@@ -105,19 +126,17 @@ final class FacturaeGenerator {
 
             // IVA
             $vatRate = (float)($i['vat'] ?? $i['vatRate'] ?? $i['taxRate'] ?? 0.0);
-            $vatType = Facturae::TAX_IVA;
 
-            // Unidad de medida (Facturae 3.2.1 admite códigos) — opcional
+            // Unidad de medida
             $uom = isset($i['unitOfMeasure']) ? (string)$i['unitOfMeasure'] : null;
 
-            // Descuentos / Cargos a nivel de línea (opcional, estructura de la lib)
+            // Descuentos / Cargos a nivel de línea
             $discounts = [];
             if (!empty($i['discountPercent'])) {
                 $discounts[] = ['rate' => (float)$i['discountPercent']];
             } elseif (!empty($i['discountAmount'])) {
                 $discounts[] = ['amount' => (float)$i['discountAmount']];
             }
-
             $charges = [];
             if (!empty($i['surchargePercent'])) {
                 $charges[] = ['rate' => (float)$i['surchargePercent']];
@@ -125,50 +144,53 @@ final class FacturaeGenerator {
                 $charges[] = ['amount' => (float)$i['surchargeAmount']];
             }
 
-            // Añadir item
-            // Firma: addItem(string $desc, float $qty, float $price, string $taxType, float $taxRate, array $discounts=[], array $charges=[], ?string $unitOfMeasure=null)
-            $fac->addItem($desc, $qty, $ppu, $vatType, $vatRate, $discounts, $charges, $uom);
-
-            // IRPF máximo (si vienes por línea)
+            // Impuestos por línea (IVA + IRPF retenido si aplica)
+            $taxes = [Facturae::TAX_IVA => $vatRate];
             $irpfLine = (float)($i['irpfRate'] ?? 0.0);
-            if ($irpfLine > $irpfMax) $irpfMax = $irpfLine;
-        }
+            $effIrpf  = $irpfLine > 0 ? $irpfLine : $irpfRate;
+            if ($effIrpf > 0) {
+                $taxes[Facturae::TAX_IRPF] = ['rate' => $effIrpf];
+            }
 
-        // 2.4 IRPF global (si aplica)
-        $irpfRate = isset($input['irpfRate']) ? (float)$input['irpfRate'] : $irpfMax;
-        if ($irpfRate > 0) {
-            $fac->setIRPF($irpfRate);
+            $itemProps = [
+                'name'           => $desc,
+                'quantity'       => $qty,
+                'unitPrice'      => $ppu,
+                'unitOfMeasure'  => $uom ?? Facturae::UNIT_DEFAULT,
+                'discounts'      => $discounts,
+                'charges'        => $charges,
+                'taxes'          => $taxes,
+            ];
+            $item = new FacturaeItem($itemProps);
+            $fac->addItem($item);
         }
 
         // 2.5 Suplidos / Reembolsables
         $reimbTotal = 0.0;
         if (!empty($input['reimbursables']) && is_array($input['reimbursables'])) {
             foreach ($input['reimbursables'] as $r) {
-                $desc = (string)($r['description'] ?? '');
                 $amt  = (float)($r['amount'] ?? 0.0);
-                $this->tryAddReimbursable($fac, $desc, $amt);
-                $reimbTotal += $amt;
+                if ($amt != 0.0) {
+                    $fac->addReimbursableExpense(new ReimbursableExpense(['amount' => $amt]));
+                    $reimbTotal += $amt;
+                }
             }
         } elseif (!empty($input['reimbursable']) && is_array($input['reimbursable'])) {
-            // Forma corta: ['reimbursable' => ['amount'=>X, 'description'=>Y]]
-            $desc = (string)($input['reimbursable']['description'] ?? 'Reembolsable');
             $amt  = (float)($input['reimbursable']['amount'] ?? 0.0);
-            $this->tryAddReimbursable($fac, $desc, $amt);
-            $reimbTotal += $amt;
+            if ($amt != 0.0) {
+                $fac->addReimbursableExpense(new ReimbursableExpense(['amount' => $amt]));
+                $reimbTotal += $amt;
+            }
         }
 
         // 2.6 Propiedades auxiliares/adjuntos/QR (opcionales)
         $this->attachExtras($fac, $input['attachments'] ?? []);
 
         // 2.7 Referencias administrativas de FACe (opcional; no todas las versiones tienen setter)
-        $fileRef = trim((string)($input['fileReference'] ?? ''));
-        if ($fileRef !== '') {
-            // Si no existe método específico, lo dejamos como propiedad adicional
-            $fac->addAdditionalProperty('FileReference', $fileRef);
-        }
+        $fileRef     = trim((string)($input['fileReference'] ?? ''));
         $contractRef = trim((string)($input['receiverContractReference'] ?? ''));
-        if ($contractRef !== '') {
-            $fac->addAdditionalProperty('ReceiverContractReference', $contractRef);
+        if ($fileRef !== '' || $contractRef !== '') {
+            $fac->setReferences($fileRef ?: null, null, $contractRef ?: null);
         }
 
         // ====== 3) Firma y exportación ======
@@ -194,8 +216,8 @@ final class FacturaeGenerator {
 
         // 3.3 Firmado + export
         try {
-            // XAdES-BES con SHA-256: la librería gestiona internamente
-            $fac->sign($certPath, $certPass);
+            // XAdES-BES con SHA-256: usar PKCS#12 (segundo parámetro null, tercero passphrase)
+            $fac->sign($certPath, null, $certPass);
             $ok = $fac->export($outPath);
 
             if (!$ok || !is_file($outPath)) {
@@ -214,6 +236,9 @@ final class FacturaeGenerator {
         // 3.4 Meta + verificaciones ligeras
         $xmlData = (string)@file_get_contents($outPath);
         $hasSig  = (bool)preg_match('/<([a-z0-9._-]+:)?Signature\b/i', $xmlData);
+        if (!$hasSig) {
+            throw new \RuntimeException('El XML Facturae se generó sin firma. Revisa el P12 y su contraseña.');
+        }
         $size    = (int)@filesize($outPath);
         $sha256  = is_file($outPath) ? (string)hash_file('sha256', $outPath) : '';
 
@@ -221,7 +246,7 @@ final class FacturaeGenerator {
         $hasOC = ($oc !== '' && strpos($xmlData, $oc) !== false);
         $hasOG = ($og !== '' && strpos($xmlData, $og) !== false);
         $hasUT = ($ut !== '' && strpos($xmlData, $ut) !== false);
-        $hasRU = $hasRU || (strpos($xmlData, 'FACeB2B-ReceivingUnit') !== false);
+        $hasRU = $hasRU || (strpos($xmlData, 'FaceB2BExtension') !== false);
 
         $this->log('export_done', [
             'path'         => $outPath,
@@ -319,13 +344,9 @@ final class FacturaeGenerator {
      * Añade suplidos si la versión de la librería lo soporta; si no, deja una marca.
      */
     private function tryAddReimbursable(Facturae $fac, string $description, float $amount): void {
+        // Compat: en 1.8.3 se usa ReimbursableExpense. Mantengo método para no romper llamadas internas.
         if ($amount == 0.0) return;
-        if (method_exists($fac, 'addReimbursable')) {
-            // Disponible en versiones recientes (>=1.7.x/1.8.x)
-            $fac->addReimbursable($description, $amount);
-        } else {
-            $fac->addAdditionalProperty('Reimbursable: ' . $description, number_format($amount, 2, '.', ''));
-        }
+        $fac->addReimbursableExpense(new ReimbursableExpense(['amount' => $amount]));
     }
 
     /**
@@ -340,25 +361,23 @@ final class FacturaeGenerator {
     private function attachExtras(Facturae $fac, $attachments): void {
         if (!is_array($attachments)) return;
 
-        // Hashes
+        $info = [];
         if (!empty($attachments['hashes']) && is_array($attachments['hashes'])) {
             foreach ($attachments['hashes'] as $h) {
-                $h = (string)$h;
-                if ($h !== '') $fac->addAdditionalProperty('Hash', $h);
+                $h = trim((string)$h);
+                if ($h !== '') $info[] = 'Hash: ' . $h;
             }
         }
-
-        // Texto QR
         if (!empty($attachments['qr_text']) && is_string($attachments['qr_text'])) {
-            $fac->addAdditionalProperty('QR-TEXT', (string)$attachments['qr_text']);
+            $info[] = 'QR: ' . (string)$attachments['qr_text'];
+        }
+        if (!empty($info)) {
+            $fac->setAdditionalInformation(implode("\n", $info));
         }
 
-        // PNG QR como base64 (opcional)
         if (!empty($attachments['qr_png']) && is_string($attachments['qr_png']) && is_file($attachments['qr_png'])) {
-            $b = @file_get_contents($attachments['qr_png']);
-            if ($b !== false && $b !== '') {
-                $fac->addAdditionalProperty('QR-PNG', base64_encode($b));
-            }
+            // Adjuntamos el PNG como anexo
+            $fac->addAttachment($attachments['qr_png'], 'QR');
         }
     }
 
@@ -388,4 +407,3 @@ final class FacturaeGenerator {
         @file_put_contents($this->logFile, $line . "\n", FILE_APPEND);
     }
 }
-

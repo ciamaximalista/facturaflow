@@ -4,7 +4,6 @@ body {
     background-color: var(--secondary-color);
     color: var(--text-color);
     margin: 0;
-    display: flex;
 }
 
 h1, h2, h3 {
