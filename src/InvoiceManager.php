@@ -6,14 +6,24 @@ final class InvoiceManager {
 
     /** @var string */
     private string $invoicesDir;
+    /** @var string */
+    private string $baseDataDir;
+    /** @var string */
+    private string $facturaeExportsDir;
 
     public function __construct() {
         $base = realpath(__DIR__ . '/../data') ?: (__DIR__ . '/../data');
-        $this->invoicesDir = rtrim($base, '/') . '/invoices/';
+        $this->baseDataDir = rtrim($base, '/');
+        $this->invoicesDir = $this->baseDataDir . '/invoices/';
+        $this->facturaeExportsDir = $this->baseDataDir . '/facturae_exports/';
         $this->ensureDir($this->invoicesDir);
         // subcarpetas que solemos usar
-        $this->ensureDir($base . '/facturae_exports');
-        $this->ensureDir($base . '/logs');
+        $this->ensureDir($this->facturaeExportsDir);
+        $this->ensureDir($this->baseDataDir . '/logs');
+    }
+
+    public function getFacturaeExportsDir(): string {
+        return $this->facturaeExportsDir;
     }
 
     // --------------------------------------------------
@@ -497,42 +507,22 @@ final class InvoiceManager {
     // Facturae (exportación)
     // --------------------------------------------------
 
-    /** Exporta y firma Facturae (.xsig) y devuelve la ruta si existe (o null). */
+    /** Devuelve la ruta del Facturae firmado previamente o null si no existe. */
     public function generateFacturae(string $invoiceId): ?string {
-        $invoicePath = $this->getInvoicePathFromId($invoiceId);
-        if (!is_file($invoicePath)) return null;
-
-        $inv = @simplexml_load_file($invoicePath);
-        if (!$inv) return null;
-
-        if (!class_exists('FacturaeGenerator') && is_file(__DIR__ . '/FacturaeGenerator.php')) {
-            require_once __DIR__ . '/FacturaeGenerator.php';
-        }
-        $gen   = new \FacturaeGenerator();
-        $input = $this->mapInvoiceToFacturaeInput($inv, null);
-        $res   = $gen->generate($input);
-
-        $path = is_array($res) ? (string)($res['path'] ?? '') : (string)$res;
-        return ($path && is_file($path)) ? $path : null;
+        $info = $this->getSignedFacturaeInfo($invoiceId);
+        return $info['absolutePath'] ?? null;
     }
 
     /**
-     * Genera un Facturae fresco para FACeB2B, con DIRe de destino, y devuelve ruta al .xsig.
+     * Devuelve la ruta al Facturae firmado listo para FACeB2B.
+     * Lanza excepción si la factura aún no ha sido firmada localmente.
      */
     public function generateFacturaeFreshForFaceB2B(string $invoiceId, string $dire): string {
-        $inv = $this->getInvoiceById($invoiceId);
-        if (!$inv) throw new \RuntimeException('Factura no encontrada: ' . $invoiceId);
-
-        if (!class_exists('FacturaeGenerator') && is_file(__DIR__ . '/FacturaeGenerator.php')) {
-            require_once __DIR__ . '/FacturaeGenerator.php';
+        $info = $this->getSignedFacturaeInfo($invoiceId);
+        if (!$info) {
+            throw new \RuntimeException('La factura aún no está firmada. Usa AutoFirma antes de enviarla.');
         }
-        $gen   = new \FacturaeGenerator();
-        $input = $this->mapInvoiceToFacturaeInput($inv, $dire);
-        $res   = $gen->generate($input);
-
-        $path = is_array($res) ? (string)($res['path'] ?? '') : (string)$res;
-        if ($path && is_file($path)) return $path;
-        throw new \RuntimeException('No se generó el fichero Facturae (.xsig).');
+        return $info['absolutePath'];
     }
 
     /** alias para compatibilidad con index */
@@ -601,8 +591,7 @@ final class InvoiceManager {
         return $max + 1;
     }
 
-    /** Mapea tu XML interno a la estructura esperada por FacturaeGenerator::generate(). */
-    /** Mapea tu XML interno a la estructura esperada por FacturaeGenerator::generate(). */
+    /** Mapea tu XML interno a la estructura esperada por FacturaeGenerator/SignatureManager (sin credenciales). */
     private function mapInvoiceToFacturaeInput(\SimpleXMLElement $inv, ?string $receivingDire = null): array {
         // ---- Serie/número a partir de ID SERIE-YYYY-NNNN → SERIEYYYY / NNNN
         $rawId  = (string)($inv->id ?? '');
@@ -631,57 +620,6 @@ final class InvoiceManager {
             'province'      => (string)($issuer['province'] ?? ''),
             'countryCode'   => (string)($issuer['countryCode'] ?? 'ESP'),
         ];
-
-        // Certificado del emisor para FacturaeGenerator
-        $certPath = (string)($issuer['certificatePath'] ?? '');
-        $certPass = (string)($issuer['certPassword']   ?? '');
-        if (class_exists('SecureConfig') && is_string($certPass) && strncmp($certPass, 'enc:v1:', 7) === 0) {
-            $dec = \SecureConfig::decrypt($certPass);
-            if (is_string($dec) && $dec !== '') $certPass = $dec;
-        }
-        // Fallbacks: si no hay P12 válido en config.json, intenta IssuerCert o plataforma
-        if ($certPath === '' || !is_file($certPath)) {
-            // 1) IssuerCert centralizado
-            try {
-                if (!class_exists('IssuerCert') && is_file(__DIR__ . '/IssuerCert.php')) {
-                    require_once __DIR__ . '/IssuerCert.php';
-                }
-                if (class_exists('IssuerCert')) {
-                    [$p12, $pp] = \IssuerCert::getPathAndPass();
-                    if (is_string($p12) && is_file($p12)) { $certPath = $p12; $certPass = $pp; }
-                }
-            } catch (\Throwable $e) { /* noop */ }
-        }
-        if ($certPath === '' || !is_file($certPath)) {
-            // 2) Plataforma (config_plataforma.json → cifra)
-            try {
-                if (!function_exists('ff_platform_dir') && is_file(__DIR__ . '/helpers.php')) { require_once __DIR__ . '/helpers.php'; }
-                $plat = function_exists('ff_platform_dir') ? \ff_platform_dir() : null;
-                if (is_string($plat) && $plat !== '') {
-                    $p12Try = rtrim($plat, '/').'/max.p12';
-                    if (is_file($p12Try)) {
-                        $certPath = $p12Try;
-                        // pass: intenta en ficheros conocidos o en faceb2b.json
-                        $cands = [ rtrim($plat,'/').'/max.pass', rtrim($plat,'/').'/faceb2b.pass', rtrim($plat,'/').'/p12.pass' ];
-                        foreach ($cands as $pf) {
-                            if (is_file($pf)) { $raw = trim((string)@file_get_contents($pf)); if ($raw !== '') { $certPass = $raw; break; } }
-                        }
-                        if (is_string($certPass) && strncmp($certPass, 'enc:v1:', 7) === 0 && class_exists('SecureConfig')) {
-                            $dec = \SecureConfig::decrypt($certPass); if (is_string($dec) && $dec !== '') $certPass = $dec;
-                        }
-                        $fbCfg = rtrim($plat,'/').'/faceb2b.json';
-                        if (($certPass === '' || $certPass === null) && is_file($fbCfg)) {
-                            $j = json_decode((string)@file_get_contents($fbCfg), true);
-                            if (is_array($j) && !empty($j['p12_pass'])) {
-                                $pp = (string)$j['p12_pass'];
-                                if (strncmp($pp, 'enc:v1:', 7) === 0 && class_exists('SecureConfig')) { $dec = \SecureConfig::decrypt($pp); if (is_string($dec) && $dec !== '') $pp = $dec; }
-                                $certPass = $pp;
-                            }
-                        }
-                    }
-                }
-            } catch (\Throwable $e) { /* noop */ }
-        }
 
         // ---- Cliente: merge del XML con la ficha (para traer DIR3, etc.)
         $cliXml = $inv->client ?? null;
@@ -771,17 +709,13 @@ final class InvoiceManager {
 
         // ---- Facturae input
         $input = [
-            'series'     => $series,
-            'number'     => $number,
-            'issueDate'  => date('Y-m-d', strtotime((string)($inv->issueDate ?? 'now'))),
-            'seller'     => $seller,
-            'buyer'      => $buyer,
-            'items'      => $items,
-            'irpfRate'   => $irpfRate,
-            'certificate'=> [
-                'path'     => $certPath,
-                'password' => $certPass,
-            ],
+            'series'    => $series,
+            'number'    => $number,
+            'issueDate' => date('Y-m-d', strtotime((string)($inv->issueDate ?? 'now'))),
+            'seller'    => $seller,
+            'buyer'     => $buyer,
+            'items'     => $items,
+            'irpfRate'  => $irpfRate,
         ];
 
         // Referencias FACe (opcionales)
@@ -797,6 +731,125 @@ final class InvoiceManager {
         }
 
         return $input;
+    }
+
+    /** Devuelve el payload normalizado listo para generar el XML Facturae sin firma. */
+    public function getFacturaePayload(string $invoiceId, array $options = []): array {
+        $xml = $this->getInvoiceById($invoiceId);
+        if (!$xml) {
+            throw new \RuntimeException('Factura no encontrada: ' . $invoiceId);
+        }
+        $receivingDire = $options['receivingDire'] ?? null;
+        return $this->mapInvoiceToFacturaeInput($xml, $receivingDire);
+    }
+
+    /** Registra metadatos de una Facturae firmada localmente y persiste el XML. */
+    public function recordSignedFacturae(string $invoiceId, string $absolutePath, array $meta = []): bool {
+        $absolutePath = realpath($absolutePath) ?: $absolutePath;
+        if ($absolutePath === '' || !is_file($absolutePath)) {
+            return false;
+        }
+
+        $invoice = $this->getInvoiceById($invoiceId);
+        if (!$invoice) {
+            return false;
+        }
+
+        $relativePath = $this->toRelativePath($absolutePath);
+        $sha256 = $meta['sha256'] ?? (is_file($absolutePath) ? hash_file('sha256', $absolutePath) : '');
+        $size   = $meta['size']   ?? (is_file($absolutePath) ? (int)filesize($absolutePath) : 0);
+        $signedAt = $meta['signedAt'] ?? date('c');
+        $source   = $meta['source']   ?? 'autofirma';
+
+        if (isset($invoice->signedFacturae)) {
+            unset($invoice->signedFacturae);
+        }
+        $node = $invoice->addChild('signedFacturae');
+        $node->addChild('path', $relativePath);
+        if ($sha256 !== '') $node->addChild('sha256', $sha256);
+        $node->addChild('size', (string)$size);
+        $node->addChild('signedAt', $signedAt);
+        $node->addChild('source', $source);
+        $node->addChild('filename', basename($absolutePath));
+
+        return $this->saveInvoiceObject($invoice);
+    }
+
+    /** Obtiene la información de la Facturae firmada si existe y es accesible. */
+    public function getSignedFacturaeInfo(string $invoiceId): ?array {
+        $invoice = $this->getInvoiceById($invoiceId);
+        if (!$invoice || !isset($invoice->signedFacturae)) {
+            return null;
+        }
+
+        $node = $invoice->signedFacturae;
+        $path = trim((string)($node->path ?? ''));
+        if ($path === '') {
+            return null;
+        }
+
+        $absolute = $this->toAbsolutePath($path);
+        if (!is_file($absolute)) {
+            return null;
+        }
+
+        $sha256 = trim((string)($node->sha256 ?? ''));
+        if ($sha256 === '') {
+            $sha256 = hash_file('sha256', $absolute) ?: '';
+        }
+        $size = (int)((string)($node->size ?? '0'));
+        if ($size <= 0) {
+            $size = (int)filesize($absolute);
+        }
+
+        return [
+            'path'         => $path,
+            'absolutePath' => $absolute,
+            'sha256'       => $sha256,
+            'signedAt'     => (string)($node->signedAt ?? ''),
+            'source'       => (string)($node->source ?? ''),
+            'size'         => $size,
+            'filename'     => (string)($node->filename ?? basename($absolute)),
+        ];
+    }
+
+    private function projectRoot(): string {
+        static $root = null;
+        if ($root === null) {
+            $root = dirname(__DIR__);
+        }
+        return $root;
+    }
+
+    private function toAbsolutePath(string $path): string {
+        if ($path === '') {
+            return '';
+        }
+        if (
+            $path[0] === '/' ||
+            (
+                strlen($path) >= 3 &&
+                ctype_alpha($path[0]) &&
+                $path[1] === ':' &&
+                ($path[2] === '\\' || $path[2] === '/')
+            )
+        ) {
+            return $path;
+        }
+        return rtrim($this->projectRoot(), '/') . '/' . ltrim(str_replace('\\', '/', $path), '/');
+    }
+
+    private function toRelativePath(string $path): string {
+        if ($path === '') {
+            return '';
+        }
+        $normalized = str_replace('\\', '/', $path);
+        $root = rtrim(str_replace('\\', '/', $this->projectRoot()), '/');
+        $prefix = $root . '/';
+        if (str_starts_with($normalized, $prefix)) {
+            return ltrim(substr($normalized, strlen($prefix)), '/');
+        }
+        return $normalized;
     }
 
 

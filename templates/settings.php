@@ -114,7 +114,7 @@
     <hr class="form-divider">
        
 
-    <h4>Logo, Cuenta bancaria y Certificado Digital</h4>
+    <h4>Logo, Cuenta bancaria y AutoFirma</h4>
 
     <div class="flex-gap">
       <div class="form-group flex-1">
@@ -141,23 +141,11 @@
     </div>
 
       <div class="form-group flex-1">
-        <label>Certificado Digital</label>
-        <div class="current-item-display">
-          <?php if (!empty($settings['certificatePath']) && file_exists($settings['certificatePath'])): ?>
-            <strong><?php echo basename($settings['certificatePath']); ?></strong>
-          <?php else: ?>
-            <span>No hay certificado subido.</span>
-          <?php endif; ?>
-        </div>
-        <label for="certificate" class="file-input-label">Subir Certificado (.p12)</label>
-        <input type="file" id="certificate" name="certificate" class="file-input-hidden" accept=".p12,.pfx">
+        <label>AutoFirma</label>
+        <div id="settings-autofirma-status" class="current-item-display">Pendiente de comprobar.</div>
+        <button type="button" id="settings-autofirma-check" class="btn" style="margin-top:0.5rem;">Detectar AutoFirma</button>
+        <small class="help-text">FacturaFlow no almacena certificados personales. Firma siempre desde tu equipo.</small>
       </div>
-    </div>
-
-    <div class="form-group">
-      <label for="certPassword">Contraseña del certificado</label>
-      <input type="password" id="certPassword" name="certPassword" class="form-control" placeholder="••••••">
-      <small class="help-text">Déjalo en blanco para mantener la actual.</small>
     </div>
 
    
@@ -305,6 +293,7 @@
   .table thead th { background:#f9fafb; text-align:left; font-weight:600; }
 </style>
 
+<script src="public/js/autofirma.js"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   const companyFields     = document.getElementById('company-fields');
@@ -370,6 +359,37 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  const autofirmaBtn = document.getElementById('settings-autofirma-check');
+  const autofirmaStatus = document.getElementById('settings-autofirma-status');
+  if (autofirmaBtn) {
+    autofirmaBtn.addEventListener('click', async () => {
+      if (!globalThis.AutofirmaClient || typeof AutofirmaClient.detect !== 'function') {
+        if (autofirmaStatus) {
+          autofirmaStatus.textContent = 'No se pudo cargar el módulo de AutoFirma.';
+        }
+        return;
+      }
+      autofirmaBtn.disabled = true;
+      if (autofirmaStatus) {
+        autofirmaStatus.textContent = 'Comprobando protocolo afirma://...';
+      }
+      try {
+        const res = await AutofirmaClient.detect({ timeout: 2000 });
+        if (autofirmaStatus) {
+          autofirmaStatus.textContent = res && res.ok
+            ? 'AutoFirma disponible (protocolo).'
+            : (res && res.message ? res.message : 'Protocolo afirma:// no disponible. Abre AutoFirma y vuelve a intentar.');
+        }
+      } catch (err) {
+        if (autofirmaStatus) {
+          autofirmaStatus.textContent = err && err.message ? err.message : 'No se pudo comprobar AutoFirma.';
+        }
+      } finally {
+        autofirmaBtn.disabled = false;
+      }
+    });
+  }
+
   // AEAT test
   const btn  = document.getElementById('aeat-test-btn');
   const msg  = document.getElementById('aeat-test-msg');
@@ -410,4 +430,3 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 </script>
-

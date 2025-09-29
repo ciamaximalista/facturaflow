@@ -152,12 +152,87 @@
   - Abre la URL de esa instancia y completa el registro del emisor (sube el P12 del usuario y su contraseña).
   
   3. Emitir y enviar una factura
-  
+
   - Crea clientes y productos (si no los tienes).
   - Crea una nueva factura (puedes añadir IRPF y suplidos).
   - Exporta Facturae (.xsig) para comprobar firma del usuario (opcional).
   - Envía a FACeB2B (requiere tener configurada la plataforma y permisos sobre /var/www/cifra).
-  
+
+## Firma distribuida con AutoFirma
+
+```
+┌────────────┐       1. Solicita XML en claro         ┌────────────────────┐
+│  Navegador │ ─────────────────────────────────────▶ │  FacturaFlow (PHP) │
+└─────┬──────┘                                         └─────────┬──────────┘
+      │ 2. XML Facturae (JSON + Base64)                           │
+      │ ◀─────────────────────────────────────────────────────────┘
+      │
+      │ 3. Firma local con AutoFirma (XAdES) usando el cert del usuario
+      ▼
+┌────────────────────┐
+│ AutoFirma (cliente)│
+└─────┬──────────────┘
+      │ 4. Facturae firmada (Base64)
+      ▼
+┌────────────────────┐       5. Guarda .xsig, registra metadatos      ┌────────────────────┐
+│  Navegador         │ ──────────────────────────────────────────────▶│  FacturaFlow (PHP) │
+└────────────────────┘                                                └───┬────────────────┘
+                                                                          │
+ 6. Envíos FACe/FACeB2B/AEAT usan siempre el certificado de plataforma ───┘
+```
+
+### Flujo paso a paso
+
+1. El usuario pulsa **Firmar con AutoFirma** desde la ficha de la factura.
+2. El navegador llama a `POST index.php?action=get_unsigned_facturae`, que genera un Facturae sin firma usando los datos persistidos.
+3. El XML se pasa a AutoFirma (cliente @firma) en el equipo del usuario; se firma con su certificado personal.
+4. El navegador envía el XML firmado (`save_signed_facturae`) y el servidor lo guarda en `data/facturae_exports/` y lo asocia a la factura.
+5. Las integraciones con FACeB2B, FACe y AEAT reutilizan ese `.xsig` firmado por el usuario, mientras que el canal se autentica con el certificado de plataforma (`/var/www/cifra/max.p12`).
+
+### Separación de certificados
+
+- **Firma de la factura (.xsig)**: siempre se realiza en el equipo del usuario con AutoFirma y su certificado personal. El servidor nunca recibe el P12 ni la contraseña.
+- **Firma/autenticación del canal (FACeB2B, FACe, AEAT)**: se ejecuta en el servidor con el certificado de la plataforma (`max.p12`), descifrado con `secret.key` bajo `/var/www/cifra`.
+
+### Puntos de seguridad
+
+- Eliminada la subida de certificados P12 de los usuarios; cualquier configuración previa se ignora.
+- Los `.xsig` firmados se guardan con metadatos (hash SHA-256 y fecha) para trazabilidad.
+- Se mantienen controles CSRF (formularios con `action`) y sanitización de entradas al generar el XML.
+- AutoFirma se detecta desde el navegador; el botón de envío queda deshabilitado si la factura no está firmada.
+- Las rutas sensibles (plataforma) se resuelven mediante `config_plataforma.json`, sin exponer credenciales en el `DocumentRoot`.
+- FACe/FACeB2B/AEAT jamás vuelven a cargar un XML si no contiene `<Signature>` válida.
+
+<a id="guia-integracion-autofirma"></a>
+### Guía de integración y solución de problemas (AutoFirma)
+
+FacturaFlow integra AutoFirma utilizando la librería oficial (`public/vendor/clienteafirma/afirma.js`) y el protocolo `afirma://`. No se realizan peticiones REST a `127.0.0.1`; la comunicación se produce directamente con la aplicación AutoFirma instalada.
+
+**Preparación por sistema operativo**
+- **Windows**: instala AutoFirma desde la web del Ministerio, ábrela al menos una vez y autoriza la aplicación en el firewall cuando aparezca el aviso.
+- **macOS**: instala AutoFirma, ábrela desde Aplicaciones (puede pedir permiso en “Seguridad y privacidad”), y mantiene la app en ejecución durante la firma.
+- **Linux**: instala AutoFirma (`.deb`/`.rpm` o paquete oficial), ejecuta `AutoFirma` o `/usr/lib/autofirma/AutoFirma` y revisa que Java esté presente.
+
+**Si el navegador no reconoce el protocolo**
+1. Abre AutoFirma manualmente y vuelve a pulsar **Firmar con AutoFirma**.
+2. Si persiste, instala el **Configurador AutoFirma** desde la web oficial (<https://firmaelectronica.gob.es/Home/Descargas.html>) y reinicia el navegador.
+3. Tras instalarlo, autoriza el dominio de tu instancia cuando AutoFirma lo solicite y deja la aplicación abierta en segundo plano.
+
+**Comprobaciones rápidas cuando algo falla**
+- ¿AutoFirma está en ejecución? Si no, ábrela manualmente y vuelve a intentar.
+- ¿Aparece un diálogo de autorización de dominio? Acepta y marca “recordar” si está disponible.
+- ¿El navegador solicita instalar el configurador/extensión? Instálalo solo si el protocolo no se abre tras iniciar AutoFirma.
+- ¿Se cancela la firma? Repite el proceso y comprueba que AutoFirma no muestre avisos bloqueantes.
+
+**Diagnóstico adicional**
+- Si AutoFirma no arranca tras pulsar firmar, abre la aplicación de forma manual y repite. En Linux puedes revisar `~/.autofirma/AutoFirma.log`.
+- Si usas proxys o productos de seguridad corporativos, asegúrate de que no bloqueen el protocolo `afirma://` ni la aplicación AutoFirma.
+- Para reinicializar permisos, cierra AutoFirma, bórrala de procesos residuales y vuelve a autorizar el dominio cuando se solicite.
+
+**Separación de certificados garantizada**
+- La factura (`.xsig`) se firma siempre en el equipo del usuario con su certificado personal mediante AutoFirma.
+- El “sobre” de comunicación con FACe, FACeB2B y AEAT continúa firmándose en el servidor con el certificado de plataforma ubicado en `/var/www/cifra`.
+
   4. Recibir y gestionar
   
   - Sincroniza FACeB2B para traer nuevas facturas recibidas.

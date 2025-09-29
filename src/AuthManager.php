@@ -9,16 +9,13 @@ class AuthManager
 {
     private $configFile;
     private $dataDir;
-    private $certsDir;
 
     public function __construct()
     {
         $this->dataDir = __DIR__ . '/../data';
         $this->configFile = $this->dataDir . '/config.json';
-        $this->certsDir = $this->dataDir . '/certs';
 
         if (!is_dir($this->dataDir)) mkdir($this->dataDir, 0775, true);
-        if (!is_dir($this->certsDir)) mkdir($this->certsDir, 0775, true);
     }
 
     /**
@@ -46,11 +43,10 @@ class AuthManager
     /**
      * Registra al usuario principal guardando sus datos en config.json.
      * @param array $data Los datos del formulario de registro.
-     * @param array|null $certFile El archivo del certificado.
      * @param array|null $logoFile El archivo del logo.
      * @return array
      */
-    public function registerUser(array $data, ?array $certFile, ?array $logoFile): array {
+    public function registerUser(array $data, ?array $logoFile): array {
 	    if ($this->isUserRegistered()) {
 		return ['success' => false, 'message' => 'El usuario ya está registrado.'];
 	    }
@@ -87,27 +83,6 @@ class AuthManager
 		}
 	    }
 
-	    // Gestionar subida de certificado
-	    if ($certFile && $certFile['error'] === UPLOAD_ERR_OK) {
-		$certName = 'cert_' . uniqid() . '_' . basename($certFile['name']);
-		if (move_uploaded_file($certFile['tmp_name'], $this->certsDir . '/' . $certName)) {
-		    $data['certificatePath'] = $this->certsDir . '/' . $certName;
-		}
-	    }
-
-	    // >>> Evitar DOBLE CIFRADO de la contraseña del certificado <<<
-	    if (isset($data['certPassword']) && $data['certPassword'] !== '') {
-		$pwd = (string)$data['certPassword'];
-		// Si ya viene cifrada (p.ej. desde index.php), respeta el valor
-		if (strpos($pwd, 'enc:v1:') !== 0 && class_exists('SecureConfig')) {
-		    $pwd = SecureConfig::encrypt($pwd);
-		}
-		$data['certPassword'] = $pwd;
-	    } else {
-		// No guardes campo vacío
-		unset($data['certPassword']);
-	    }
-	    
 	    // --- Valores por defecto AEAT en primera creación de config.json ---
 		$data += [
 		    'aeatLogXml'            => true,      // booleano

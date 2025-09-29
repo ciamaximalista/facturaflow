@@ -261,8 +261,61 @@ $bannerText = match (mb_strtolower($payStatus, 'UTF-8')) {
         <?php if (!$cancelled): ?>
             <a href="index.php?page=rectify_prompt&id=<?php echo urlencode((string)$invoice->id); ?>" class="btn btn-danger">Rectificar</a>
         <?php endif; ?>
-    </div>
+</div>
 
+<?php
+    $downloadPath = $signedInfo['path'] ?? null;
+    $signedAtText = isset($signedInfo['signedAt']) && $signedInfo['signedAt'] !== ''
+        ? date('d/m/Y H:i', strtotime($signedInfo['signedAt']))
+        : null;
+    $signButtonLabel = $signedInfo ? 'Re-firmar con AutoFirma' : 'Firmar con AutoFirma';
+?>
+
+<div class="signature-panel" data-signed="<?= $signedInfo ? '1' : '0' ?>">
+    <div class="signature-status">
+        <strong>Firma AutoFirma:</strong>
+        <?php if ($signedInfo): ?>
+            <span id="signature-status-pill" class="pill pill-ok">Firmada<?= $signedAtText ? ' · ' . htmlspecialchars($signedAtText) : '' ?></span>
+        <?php else: ?>
+            <span id="signature-status-pill" class="pill pill-wait">Sin firmar</span>
+        <?php endif; ?>
+        <a id="signature-download"
+           class="btn btn-extra-small"
+           href="<?= $signedInfo && $downloadPath ? htmlspecialchars($downloadPath) : '#' ?>"
+           target="_blank" rel="noopener"
+           style="<?= $signedInfo && $downloadPath ? '' : 'display:none;' ?>">
+           Descargar Facturae
+        </a>
+    </div>
+    <div class="signature-actions">
+        <button type="button" id="signature-action-btn" class="btn" data-invoice-id="<?= htmlspecialchars((string)$invoice->id) ?>">
+            <?= htmlspecialchars($signButtonLabel) ?>
+        </button>
+        <span id="signature-action-msg" class="muted"></span>
+    </div>
+    <?php if (!$signedInfo): ?>
+    <div class="autofirma-instructions">
+        <strong>Para firmar con AutoFirma:</strong>
+        <ol id="autofirma-steps">
+            <li>Tener AutoFirma instalado y abierto.</li>
+            <li>Permitir este dominio en AutoFirma si se solicita.</li>
+            <li>Instalar el configurador/extensión del navegador solo si se solicita.</li>
+            <li>Pulsa «Firmar con AutoFirma».</li>
+        </ol>
+        <p id="autofirma-status-text" class="muted"></p>
+        <a id="autofirma-configurator-link"
+           href="https://firmaelectronica.gob.es/Home/Descargas.html"
+           target="_blank" rel="noopener"
+           class="btn btn-small"
+           style="margin-top:0.6rem; display:none;">
+           Instalar configurador (solo si el protocolo falla)
+        </a>
+        <p class="muted" style="margin-top:0.4rem;">
+            ¿Problemas? Consulta la <a href="https://github.com/ciamaximalista/facturaflow#guia-integracion-autofirma" target="_blank" rel="noopener">guía de integración</a>.
+        </p>
+    </div>
+    <?php endif; ?>
+</div>
 
 
 </div>
@@ -564,7 +617,17 @@ $bannerText = match (mb_strtolower($payStatus, 'UTF-8')) {
 
 .hash-container{padding:.75rem 1rem;border:1px solid #e5e7eb;border-radius:.5rem;background:#fafafa;margin-right:1rem}
 .hash-container .mono{font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
+.signature-panel{display:flex;align-items:center;justify-content:space-between;gap:1rem;margin:1.5rem 0;padding:1rem;border:1px solid #e5e7eb;border-radius:.75rem;background:#f9fafb;flex-wrap:wrap}
+.signature-status{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap}
+.signature-actions{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap}
+.autofirma-instructions{flex:1 1 100%;margin-top:.75rem;padding:.75rem 1rem;border:1px dashed #94a3b8;background:#f8fafc;border-radius:.65rem}
+.autofirma-instructions ol{margin:.5rem 0 0;padding-left:1.5rem;font-size:.95rem;line-height:1.5}
+.autofirma-instructions .muted{margin-top:.65rem;}
+.btn-extra-small{padding:.3rem .75rem;font-size:.85rem;border-radius:.4rem;background:#1d4ed8;color:#fff;text-decoration:none;display:inline-block;border:1px solid #1d4ed8;}
+.btn-extra-small:hover{opacity:.9;}
 </style>
+
+<script src="public/js/autofirma.js"></script>
 
 <script>
 // Sincronizar FACeB2B desde vista individual (refresca estado de pago)
@@ -616,6 +679,147 @@ $bannerText = match (mb_strtolower($payStatus, 'UTF-8')) {
     }catch(err){ if (msg) msg.textContent = String(err.message || err); }
     finally{ if (btn) btn.disabled = false; }
   });
+})();
+</script>
+
+<script>
+(function(){
+  const btn = document.getElementById('signature-action-btn');
+  if (!btn) return;
+  const statusPill = document.getElementById('signature-status-pill');
+  const msgEl = document.getElementById('signature-action-msg');
+  const downloadEl = document.getElementById('signature-download');
+  const container = document.querySelector('.signature-panel');
+  const invoiceId = btn.getAttribute('data-invoice-id');
+  const statusText = document.getElementById('autofirma-status-text');
+  const configuratorLink = document.getElementById('autofirma-configurator-link');
+
+  function setMessage(text, isError) {
+    if (!msgEl) return;
+    msgEl.textContent = text || '';
+    msgEl.style.color = isError ? '#b00020' : '#4b5563';
+  }
+
+  function decodeBase64ToString(b64) {
+    const binary = atob(b64);
+    const len = binary.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const decoder = new TextDecoder('utf-8');
+    return decoder.decode(bytes);
+  }
+
+  function mapError(err) {
+    const reason = err && err.reason ? err.reason : 'unknown';
+    const fallback = err && err.message ? err.message : null;
+    if (globalThis.AutofirmaClient && typeof AutofirmaClient.messageFor === 'function') {
+      return AutofirmaClient.messageFor(reason, fallback);
+    }
+    return fallback || 'No se pudo completar la operación con AutoFirma.';
+  }
+
+  async function refreshAvailability() {
+    if (!statusText) return;
+    if (!globalThis.AutofirmaClient || typeof AutofirmaClient.detect !== 'function') {
+      statusText.textContent = 'Cargando integración de AutoFirma…';
+      return;
+    }
+    statusText.textContent = 'Comprobando AutoFirma…';
+    try {
+      const availability = await AutofirmaClient.detect({ timeout: 2000 });
+      const ok = availability && availability.ok;
+      if (statusText) {
+        statusText.textContent = ok
+          ? 'AutoFirma está lista para firmar (protocolo afirma://).'
+          : (availability && availability.message ? availability.message : 'El protocolo afirma:// no ha respondido. Abre AutoFirma y reintenta.');
+      }
+      if (configuratorLink) {
+        configuratorLink.style.display = (!ok && availability && availability.reason === 'protocol-unavailable')
+          ? 'inline-block'
+          : 'none';
+      }
+    } catch (err) {
+      if (statusText) {
+        statusText.textContent = err && err.message ? err.message : 'No se pudo comprobar AutoFirma.';
+      }
+      if (configuratorLink) {
+        configuratorLink.style.display = 'inline-block';
+      }
+    }
+  }
+
+  async function signWithAutofirma() {
+    if (!invoiceId) return;
+    if (!globalThis.AutofirmaClient || typeof AutofirmaClient.signFacturaeXml !== 'function') {
+      setMessage('No se pudo cargar el módulo de AutoFirma en esta página.', true);
+      return;
+    }
+
+    btn.disabled = true;
+    setMessage('Preparando factura para firmar...');
+
+    try {
+      const params = new URLSearchParams();
+      params.set('action', 'get_unsigned_facturae');
+      params.set('id', invoiceId);
+      const unsignedRes = await fetch('index.php', {
+        method: 'POST',
+        body: params,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'same-origin'
+      });
+      const unsignedJson = await unsignedRes.json();
+      if (!unsignedRes.ok || !unsignedJson.success || !unsignedJson.xml) {
+        throw new Error(unsignedJson && unsignedJson.message ? unsignedJson.message : 'No se pudo obtener el XML sin firmar.');
+      }
+
+      setMessage('Firma en curso...');
+      const xmlString = decodeBase64ToString(unsignedJson.xml);
+      const result = await AutofirmaClient.signFacturaeXml(xmlString, invoiceId + '.xsig', { invoiceId });
+      const saveJson = result && result.saveResponse ? result.saveResponse : result;
+
+      setMessage('Factura firmada correctamente.');
+      if (statusPill) {
+        statusPill.classList.remove('pill-wait');
+        statusPill.classList.add('pill-ok');
+        const signedAt = (saveJson && saveJson.meta && saveJson.meta.signedAt) ? new Date(saveJson.meta.signedAt) : null;
+        statusPill.textContent = signedAt ? 'Firmada · ' + signedAt.toLocaleString() : 'Firmada';
+      }
+      if (downloadEl) {
+        const meta = (saveJson && saveJson.meta) || {};
+        const linkPath = meta.path || (saveJson ? saveJson.path : '') || '';
+        if (linkPath) {
+          downloadEl.href = linkPath;
+          downloadEl.textContent = 'Descargar Facturae';
+          downloadEl.style.display = 'inline-block';
+        }
+      }
+      if (container) {
+        container.setAttribute('data-signed', '1');
+      }
+      btn.textContent = 'Re-firmar con AutoFirma';
+      await refreshAvailability();
+    } catch (err) {
+      const friendly = mapError(err);
+      setMessage(friendly, true);
+      if (statusText && err && err.reason === 'protocol-unavailable') {
+        statusText.textContent = friendly;
+      }
+      if (configuratorLink && err && err.reason === 'protocol-unavailable') {
+        configuratorLink.style.display = 'inline-block';
+      }
+      if (!err || err.reason !== 'protocol-unavailable') {
+        await refreshAvailability();
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  btn.addEventListener('click', signWithAutofirma);
+  refreshAvailability();
 })();
 </script>
 

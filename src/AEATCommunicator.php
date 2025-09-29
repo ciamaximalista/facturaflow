@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/InvoiceManager.php';
 require_once __DIR__ . '/SecureConfig.php';
+require_once __DIR__ . '/helpers.php';
 
 // Clases de la librería josemmo/Verifactu-PHP (si está instalada vía Composer)
 use josemmo\Verifactu\Models\ComputerSystem;
@@ -113,16 +114,13 @@ final class AEATCommunicator {
             return ['success' => false, 'message' => 'Factura no encontrada'];
         }
 
-        // ---- Certificado PFX/P12 del EMISOR ----
-        $p12Path = (string)($this->cfg['certificatePath'] ?? '');
-        $p12Pass = (string)($this->cfg['certPassword'] ?? '');
-        if ($p12Pass !== '' && class_exists('SecureConfig') && strncmp($p12Pass, 'enc:v1:', 7) === 0) {
-            $dec = SecureConfig::decrypt($p12Pass);
-            if (is_string($dec) && $dec !== '') $p12Pass = $dec;
-        }
+        // ---- Certificado PFX/P12 de la plataforma ----
+        $platformCreds = ff_platform_credentials();
+        $p12Path = (string)($platformCreds['path'] ?? '');
+        $p12Pass = (string)($platformCreds['pass'] ?? '');
         if ($p12Path === '' || !is_file($p12Path)) {
-            $im->setAeatStatus($invoiceId, 'Failed', 'No se encontró el certificado del emisor', null);
-            return ['success' => false, 'message' => 'Certificado no encontrado'];
+            $im->setAeatStatus($invoiceId, 'Failed', 'No se encontró el certificado de plataforma para AEAT', null);
+            return ['success' => false, 'message' => 'Certificado de plataforma no disponible'];
         }
 
         // ---- Emisor / Sistema Informático ----
@@ -249,16 +247,13 @@ final class AEATCommunicator {
             return ['success' => false, 'message' => 'Factura no encontrada'];
         }
 
-        // === Certificado del emisor ===
-        $p12Path = (string)($this->cfg['certificatePath'] ?? '');
-        $p12Pass = (string)($this->cfg['certPassword'] ?? '');
-        if (class_exists('SecureConfig')) {
-            $dec = SecureConfig::decrypt($p12Pass);
-            if (is_string($dec) && $dec !== '') $p12Pass = $dec;
-        }
+        // === Certificado de plataforma ===
+        $platformCreds = ff_platform_credentials();
+        $p12Path = (string)($platformCreds['path'] ?? '');
+        $p12Pass = (string)($platformCreds['pass'] ?? '');
         if ($p12Path === '' || !is_file($p12Path)) {
-            $im->setAeatStatus($invoiceId, 'Failed', 'No se encontró el certificado del emisor', null);
-            return ['success' => false, 'message' => 'Certificado no encontrado'];
+            $im->setAeatStatus($invoiceId, 'Failed', 'No se encontró el certificado de plataforma', null);
+            return ['success' => false, 'message' => 'Certificado de plataforma no disponible'];
         }
 
         $pem = $this->ensurePemFromP12($p12Path, $p12Pass);

@@ -288,16 +288,17 @@ function auth_is_authenticated($auth): bool {
 		    }
 		}
 
-		if (!function_exists('json_error')) {
-		    /**
-		     * @param string $message
-		     * @param array<string,mixed> $extra
-		     * @return array<string,mixed>
+if (!function_exists('json_error')) {
+    /**
+     * @param string $message
+     * @param array<string,mixed> $extra
+     * @return array<string,mixed>
      */
     function json_error(string $message = 'Error', array $extra = []): array
     {
         return array_merge(['success' => false, 'message' => $message], $extra);
     }
+}
 
 /**
  * Localiza el XML/X-SIG de Facturae correspondiente a una factura.
@@ -438,64 +439,93 @@ if (!function_exists('ff_platform_dir')) {
     }
 }
 
-/**
- * Sube/actualiza el certificado del emisor y/o su contraseña.
- * - Si viene fichero en $_FILES['certificate'] => se guarda SIEMPRE como data/certs/issuer.cert
- * - Si no hay fichero pero hay contraseña => actualiza data/certs/issuer.pass
- * Devuelve ['ok'=>bool,'message'?:string]
- */
-function ff_handle_issuer_cert_upload(array $files, array $post): array {
-    $fieldCert = 'certificate';
-    $fieldPass = 'certPassword';
-
-    $hasFile = isset($files[$fieldCert]) 
-        && is_array($files[$fieldCert]) 
-        && ($files[$fieldCert]['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE
-        && !empty($files[$fieldCert]['tmp_name']);
-
-    $pass = isset($post[$fieldPass]) ? trim((string)$post[$fieldPass]) : '';
-
-    // 1) Si hay fichero, delegamos en IssuerCert::saveUploaded (guardar como issuer.cert)
-    if ($hasFile) {
-        $res = \IssuerCert::saveUploaded($files[$fieldCert], ($pass !== '' ? $pass : null));
-        if (!$res['ok']) return ['ok'=>false, 'message'=>$res['message'] ?? 'No se pudo guardar el certificado.'];
-        return ['ok'=>true];
-    }
-
-    // 2) Solo contraseña (sin fichero)
-    if ($pass !== '') {
-        if (class_exists('SecureConfig')) {
-            $enc = \SecureConfig::encrypt($pass); // debe devolver 'enc:v1:...'
-            if (!is_string($enc) || $enc === '') {
-                return ['ok'=>false, 'message'=>'No se pudo cifrar la contraseña del certificado.'];
-            }
-            // Escribe/actualiza en config JSON
-            $cfgPath = __DIR__ . '/repoblacion/data/config.json';
-            $cfg = [];
-            if (is_file($cfgPath)) {
-                $tmp = json_decode((string)@file_get_contents($cfgPath), true);
-                if (is_array($tmp)) $cfg = $tmp;
-            }
-            $cfg['issuer_pass'] = $enc;
-            @mkdir(dirname($cfgPath), 0775, true);
-            if (@file_put_contents($cfgPath, json_encode($cfg, JSON_UNESCAPED_UNICODE|JSON_PRETTY_PRINT)) === false) {
-                return ['ok'=>false, 'message'=>'No se pudo guardar la pass cifrada en config.json'];
-            }
-            // si existía issuer.pass en claro, lo eliminamos
-            if (is_file(\IssuerCert::PASS_PATH)) @unlink(\IssuerCert::PASS_PATH);
-        } else {
-            // fallback: issuer.pass en claro
-            @mkdir(dirname(\IssuerCert::PASS_PATH), 0775, true);
-            if (@file_put_contents(\IssuerCert::PASS_PATH, $pass) === false) {
-                return ['ok'=>false, 'message'=>'No se pudo actualizar la contraseña del certificado.'];
-            }
-            @chmod(\IssuerCert::PASS_PATH, 0600);
+if (!function_exists('ff_decrypt_platform_pass')) {
+    function ff_decrypt_platform_pass(string $value, string $platformDir): ?string {
+        if (strncmp($value, 'enc:v1:', 7) !== 0) {
+            return $value;
         }
+        if (!class_exists('SecureConfig')) {
+            return null;
+        }
+        $dir = rtrim($platformDir, '/');
+        $candidates = [
+            $dir . '/secret.key',
+            '/var/www/cifra/secret.key',
+            '/var/www/html/cifra/secret.key',
+            __DIR__ . '/../data/secret.key',
+        ];
+        foreach ($candidates as $key) {
+            if (is_file($key)) {
+                $dec = SecureConfig::decryptWithKeyFile($value, $key);
+                if (is_string($dec) && $dec !== '') {
+                    return $dec;
+                }
+            }
+        }
+        return null;
     }
-
-    return ['ok'=>true];
 }
 
+if (!function_exists('ff_platform_credentials')) {
+    function ff_platform_credentials(): array {
+        $plat = ff_platform_dir();
+        if (!$plat) {
+            return ['path' => null, 'pass' => null, 'source' => null];
+        }
 
+        $plat = rtrim($plat, '/');
+        $p12Path = null;
+        $pass = null;
+        $source = null;
 
+        $configFiles = [
+            $plat . '/faceb2b.json',
+            $plat . '/config.json',
+        ];
+        foreach ($configFiles as $cfg) {
+            if (!is_file($cfg)) {
+                continue;
+            }
+            $data = json_decode((string)@file_get_contents($cfg), true);
+            if (!is_array($data)) {
+                continue;
+            }
+            if (!$p12Path && !empty($data['p12_path']) && is_string($data['p12_path'])) {
+                $p12Path = $data['p12_path'];
+                $source = basename($cfg) . '::p12_path';
+            }
+            if (!$pass && isset($data['p12_pass'])) {
+                $candidate = (string)$data['p12_pass'];
+                $decoded = ff_decrypt_platform_pass($candidate, $plat);
+                $pass = $decoded ?? $candidate;
+            }
+        }
+
+        if (!$p12Path && is_file($plat . '/max.p12')) {
+            $p12Path = $plat . '/max.p12';
+            $source = 'max.p12';
+        }
+
+        if (!$pass) {
+            foreach (['/max.pass', '/faceb2b.pass', '/p12.pass'] as $suffix) {
+                $candidate = $plat . $suffix;
+                if (is_file($candidate)) {
+                    $raw = trim((string)@file_get_contents($candidate));
+                    if ($raw !== '') {
+                        $pass = ff_decrypt_platform_pass($raw, $plat) ?? $raw;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if ($p12Path && !preg_match('/^(?:[A-Za-z]:[\\\/]|\/)/', $p12Path)) {
+            $p12Path = $plat . '/' . ltrim($p12Path, '/');
+        }
+        if ($p12Path && !is_file($p12Path)) {
+            $p12Path = null;
+        }
+
+        return ['path' => $p12Path, 'pass' => $pass, 'source' => $source];
+    }
 }

@@ -10,14 +10,14 @@ require_once __DIR__ . '/vendor/autoload.php';
 require_once __DIR__ . '/src/DataManager.php';
 require_once __DIR__ . '/src/InvoiceManager.php';
 require_once __DIR__ . '/src/VeriFactu.php';
-require_once __DIR__ . '/src/FacturaeGenerator.php';
-require_once __DIR__ . '/src/helpers.php';
 require_once __DIR__ . '/src/AuthManager.php';
 require_once __DIR__ . '/src/SecureConfig.php';
+require_once __DIR__ . '/src/helpers.php';
 require_once __DIR__ . '/src/AEATCommunicator.php';
 require_once __DIR__ . '/src/ReceivedManager.php';
 require_once __DIR__ . '/src/FaceB2BClient.php';
 require_once __DIR__ . '/src/Normalizers.php';
+require_once __DIR__ . '/src/SignatureManager.php';
 
 // --- INICIALIZACIÓN DE CONFIG.JSON ---
 $cfgPath = __DIR__ . '/data/config.json';
@@ -63,11 +63,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             }
         }
         $data = $_POST;
-        if (!empty($data['certPassword'])) {
-            $data['certPassword'] = SecureConfig::encrypt((string)$data['certPassword']);
-        }
         try {
-            $res = $auth->registerUser($data, $_FILES['certificate'] ?? null, $_FILES['logo'] ?? null);
+            $res = $auth->registerUser($data, $_FILES['logo'] ?? null);
             json_response($res['success'] ? ['success' => true, 'redirect' => 'index.php?page=dashboard'] : ['success' => false, 'message' => $res['message'] ?? 'Error en registro.']);
         } catch (Throwable $e) {
             json_response(['success' => false, 'message' => 'Error: '.$e->getMessage()]);
@@ -169,6 +166,55 @@ $page = $map[strtolower((string)$rawPage)] ?? strtolower((string)$rawPage);
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     try {
         switch ((string)$_POST['action']) {
+            case 'get_unsigned_facturae': {
+                $invoiceId = trim((string)($_POST['id'] ?? ''));
+                if ($invoiceId === '') {
+                    json_response(['success' => false, 'message' => 'Falta el identificador de la factura'], 400);
+                }
+
+                try {
+                    $im = new InvoiceManager();
+                    $payload = $im->getFacturaePayload($invoiceId, []);
+                    $sm = new SignatureManager();
+                    $xml = $sm->generateUnsignedXml($payload);
+                    $hash = hash('sha256', $xml) ?: '';
+                    json_response([
+                        'success'   => true,
+                        'invoiceId' => $invoiceId,
+                        'xml'       => base64_encode($xml),
+                        'sha256'    => $hash,
+                        'meta'      => [
+                            'series' => $payload['series'] ?? null,
+                            'number' => $payload['number'] ?? null,
+                            'issueDate' => $payload['issueDate'] ?? null,
+                        ],
+                    ]);
+                } catch (Throwable $e) {
+                    json_response(['success' => false, 'message' => 'No se pudo preparar la factura para firmar: ' . $e->getMessage()], 500);
+                }
+                break;
+            }
+
+            case 'save_signed_facturae': {
+                $invoiceId = trim((string)($_POST['id'] ?? ''));
+                $signedB64 = trim((string)($_POST['signedXml'] ?? ''));
+                if ($invoiceId === '' || $signedB64 === '') {
+                    json_response(['success' => false, 'message' => 'Faltan datos de la factura firmada.'], 400);
+                }
+
+                try {
+                    $im = new InvoiceManager();
+                    $payload = $im->getFacturaePayload($invoiceId, []);
+                    $payload['fileSuffix'] = 'AUTOFIRMA';
+                    $sm = new SignatureManager();
+                    $result = $sm->saveSignedXml($invoiceId, $signedB64, $payload);
+                    json_response($result, $result['success'] ? 200 : 400);
+                } catch (Throwable $e) {
+                    json_response(['success' => false, 'message' => 'No se pudo guardar la factura firmada: ' . $e->getMessage()], 500);
+                }
+                break;
+            }
+
             // --- Facturación ---
             case 'create_invoice': {
                 $im = new InvoiceManager();
@@ -210,40 +256,69 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             case 'faceb2b_send':
             case 'send_faceb2b_to_client': {
                 $invoiceId = trim((string)($_POST['invoice_id'] ?? $_POST['id'] ?? ''));
-                if ($invoiceId === '') { json_response(['success'=>false,'message'=>'Falta invoice_id.'], 400); }
+                if ($invoiceId === '') {
+                    json_response(['success'=>false,'message'=>'Falta invoice_id.'], 400);
+                }
 
                 $im  = new InvoiceManager();
                 $inv = $im->getInvoiceById($invoiceId);
-                if (!$inv) { json_response(['success'=>false, 'message'=>'Factura no encontrada.'], 404); }
+                if (!$inv) {
+                    json_response(['success'=>false, 'message'=>'Factura no encontrada.'], 404);
+                }
 
                 $clientId = (string)($inv->client->id ?? '');
                 $dm = new DataManager('clients');
                 $client = $dm->getItemById($clientId);
-                if (!$client) { json_response(['success'=>false, 'message'=>'Ficha de cliente no encontrada.'], 400); }
-
-                $dire = strtoupper(trim((string)($client->dire ?? '')));
-                if ($dire === '') { json_response(['success'=>false, 'message'=>'El cliente no tiene DIRe.'], 400); }
-
-                $xmlPath = $im->generateFacturaeFreshForFaceB2B($invoiceId, $dire);
-                if (!$xmlPath || !is_file($xmlPath)) {
-                    json_response(['success' => false, 'message' => 'No se pudo generar el Facturae.'], 500);
+                if (!$client) {
+                    json_response(['success'=>false, 'message'=>'Ficha de cliente no encontrada.'], 400);
                 }
 
-                // Log sencillo
-                $size = @filesize($xmlPath);
-                $peek = substr((string)@file_get_contents($xmlPath), 0, 50);
-                @file_put_contents(__DIR__.'/data/logs/faceb2b.log',
-                    '['.date('c')."] will_send xml=".basename($xmlPath)." size={$size} dire={$dire} peek=".json_encode($peek)."\n",
-                    FILE_APPEND
-                );
+                $dire = strtoupper(trim((string)($client->dire ?? '')));
+                if ($dire === '') {
+                    json_response(['success'=>false, 'message'=>'El cliente no tiene DIRe configurado.'], 400);
+                }
+
+                $signedInfo = $im->getSignedFacturaeInfo($invoiceId);
+                if (!$signedInfo || empty($signedInfo['absolutePath'])) {
+                    json_response(['success'=>false, 'message'=>'La factura no está firmada todavía. Firma con AutoFirma antes de enviarla.'], 400);
+                }
+
+                $xmlPath = $signedInfo['absolutePath'];
+                $xmlData = (string)@file_get_contents($xmlPath);
+                if ($xmlData === '') {
+                    json_response(['success'=>false,'message'=>'No se pudo leer el fichero Facturae firmado.'], 500);
+                }
+                if (!preg_match('/<([a-z0-9._-]+:)?Signature\b/i', $xmlData)) {
+                    json_response(['success'=>false,'message'=>'El fichero Facturae no contiene firma digital.'], 400);
+                }
+
+                // Verificación suave de DIR3 presentes
+                $dir3Oc = strtoupper(trim((string)($client->face_dir3_oc ?? $client->dir3_oc ?? '')));
+                $dir3Og = strtoupper(trim((string)($client->face_dir3_og ?? $client->dir3_og ?? '')));
+                $dir3Ut = strtoupper(trim((string)($client->face_dir3_ut ?? $client->dir3_ut ?? '')));
+                if ($dir3Oc !== '' && strpos($xmlData, $dir3Oc) === false) {
+                    json_response(['success'=>false,'message'=>'El XML firmado no contiene el DIR3 OC del cliente.'], 400);
+                }
+                if ($dir3Og !== '' && strpos($xmlData, $dir3Og) === false) {
+                    json_response(['success'=>false,'message'=>'El XML firmado no contiene el DIR3 OG del cliente.'], 400);
+                }
+                if ($dir3Ut !== '' && strpos($xmlData, $dir3Ut) === false) {
+                    json_response(['success'=>false,'message'=>'El XML firmado no contiene el DIR3 UT del cliente.'], 400);
+                }
 
                 $cfg = json_decode((string)@file_get_contents($cfgPath), true) ?: [];
                 $faceCfg = (array)($cfg['faceb2b'] ?? []);
-                // Descifra pass si viene cifrada
                 if (!empty($faceCfg['p12_pass']) && is_string($faceCfg['p12_pass']) && strncmp($faceCfg['p12_pass'], 'enc:v1:', 7) === 0) {
                     $dec = SecureConfig::decrypt((string)$faceCfg['p12_pass']);
-                    if (is_string($dec) && $dec !== '') $faceCfg['p12_pass'] = $dec;
+                    if (is_string($dec) && $dec !== '') {
+                        $faceCfg['p12_pass'] = $dec;
+                    }
                 }
+
+                @file_put_contents(__DIR__.'/data/logs/faceb2b.log',
+                    '['.date('c')."] will_send xml=".basename($xmlPath)." size=".strlen($xmlData)." dire={$dire}\n",
+                    FILE_APPEND
+                );
 
                 $fb2b = new FaceB2BClient($faceCfg);
                 $result = $fb2b->sendInvoice($xmlPath, $dire);
@@ -251,25 +326,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $registrationCode = $result['registrationCode'] ?? null;
                 if (!empty($registrationCode)) {
                     $im->setFaceb2bCode($invoiceId, (string)$registrationCode);
-                    // Marca como enviado (flag de compatibilidad con invoice_list)
                     $flagDir = __DIR__ . '/data/faceb2b/sent';
                     if (!is_dir($flagDir)) @mkdir($flagDir, 0775, true);
                     @file_put_contents($flagDir . '/' . basename($invoiceId) . '.flag', (string)$registrationCode);
 
                     json_response(['success' => true, 'message' => 'Factura enviada a FACeB2B.', 'registrationCode' => $registrationCode]);
-                } else {
-                    $raw = $result['response'] ?? [];
-                    // Prioriza mensaje interno de FaceB2BClient si existe
-                    $msg = $result['message']
-                        ?? ($raw['resultStatus']['message']
-                            ?? ($raw['result']['status']['message']
-                                ?? 'FACeB2B respondió sin código de registro.'));
-                    json_response([
-                        'success' => false,
-                        'message' => $msg,
-                        'raw' => $raw
-                    ], 502);
                 }
+
+                $raw = $result['response'] ?? [];
+                $msg = $result['message']
+                    ?? ($raw['resultStatus']['message']
+                        ?? ($raw['result']['status']['message']
+                            ?? 'FACeB2B respondió sin código de registro.'));
+                json_response([
+                    'success' => false,
+                    'message' => $msg,
+                    'raw'     => $raw
+                ], 502);
                 break;
             }
 
@@ -283,6 +356,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $im  = new InvoiceManager();
                 $inv = $im->getInvoiceById($invoiceId);
                 if (!$inv) { json_response(['success'=>false, 'message'=>'Factura no encontrada.'], 404); }
+
+                $issuerConfigRaw = file_exists($cfgPath) ? (string)@file_get_contents($cfgPath) : '';
+                $issuerConfig = $issuerConfigRaw !== '' ? (json_decode($issuerConfigRaw, true) ?: []) : [];
+                $issuerData = (array)($issuerConfig['issuer'] ?? $issuerConfig);
 
                 // Cliente (DIR3/email)
                 $clientId = (string)($inv->client->id ?? '');
@@ -301,164 +378,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     json_response(['success'=>false, 'message'=>'Faltan códigos DIR3 (OG/UT/OC).'], 400);
                 }
                 $notifyEmail = (string)($clientArr['faceNotifyEmail'] ?? '');
-
-                // Emisor
-                $issuer  = file_exists($cfgPath) ? json_decode((string)@file_get_contents($cfgPath), true) : [];
-                if (empty($issuer)) { json_response(['success'=>false,'message'=>'Faltan datos del emisor en config.json'], 500); }
-
-                // Descifra SOLO si viene como enc:v1:...
-                $certPass = (string)($issuer['certPassword'] ?? '');
-                if (class_exists('SecureConfig') && strncmp($certPass, 'enc:v1:', 7) === 0) {
-                    $dec = SecureConfig::decrypt($certPass);
-                    if (is_string($dec) && $dec !== '') { $certPass = $dec; }
-                }
-                $certPath = (string)($issuer['certificatePath'] ?? '');
-                @file_put_contents($logFace,
-                    '['.date('c')."] cert_path={$certPath} pass_len=".strlen($certPass)."\n",
-                    FILE_APPEND
-                );
-
-                if ($certPath === '' || !is_file($certPath)) {
-                    json_response(['success'=>false, 'message'=>'No se encontró el certificado P12 del emisor.'], 500);
-                }
-                if (!function_exists('openssl_pkcs12_read')) {
-                    json_response(['success'=>false, 'message'=>'PHP sin OpenSSL: no se puede firmar la petición a FACe.'], 500);
+                $signedInfo = $im->getSignedFacturaeInfo($invoiceId);
+                if (!$signedInfo || empty($signedInfo['absolutePath'])) {
+                    json_response(['success'=>false,'message'=>'La factura no está firmada. Firma con AutoFirma antes de enviarla a FACE.'], 400);
                 }
 
-                // Serie/número desde el id (FAC-2025-0017 => series FAC2025, number 0017)
-                $idParts       = explode('-', (string)$inv->id);
-                $invoiceSeries = ($idParts[0] ?? 'FAC') . ($idParts[1] ?? date('Y'));
-                $invoiceNumber = $idParts[2] ?? '0001';
-
-                // Seller
-                $sellerData = [
-                    'taxNumber'   => $issuer['nif'] ?? '',
-                    'address'     => $issuer['address'] ?? '',
-                    'postCode'    => $issuer['postCode'] ?? '',
-                    'town'        => $issuer['town'] ?? '',
-                    'province'    => $issuer['province'] ?? '',
-                    'countryCode' => 'ESP',
-                ];
-                if (($issuer['entityType'] ?? 'company') === 'freelancer') {
-                    $sellerData['isLegalEntity'] = false;
-                    $sellerData['name']          = $issuer['firstName'] ?? '';
-                    $sellerData['firstSurname']  = $issuer['lastName'] ?? '';
-                    $sellerData['lastSurname']   = $issuer['secondSurname'] ?? '';
-                } else {
-                    $sellerData['isLegalEntity'] = true;
-                    $sellerData['name']          = $issuer['companyName'] ?? '';
+                $xmlPath = $signedInfo['absolutePath'];
+                $xmlData = (string)@file_get_contents($xmlPath);
+                if ($xmlData === '') {
+                    json_response(['success'=>false,'message'=>'No se pudo leer el fichero Facturae firmado.'], 500);
+                }
+                if (!preg_match('/<([a-z0-9._-]+:)?Signature\b/i', $xmlData)) {
+                    json_response(['success'=>false,'message'=>'El fichero Facturae no contiene firma digital.'], 400);
                 }
 
-                // helper mínimo para elegir la primera clave no vacía
-                $pick = function(array $a, array $keys, string $default=''): string {
-                    foreach ($keys as $k) {
-                        if (!empty($a[$k])) return (string)$a[$k];
-                    }
-                    return $default;
-                };
-
-                // Buyer normalizado
-                $clientNorm = Normalizers::client($client);
-                $buyerData = [
-                    'taxNumber'   => (string)($clientNorm['nif'] ?? ''),
-                    'address'     => (string)($clientNorm['address'] ?? ''),
-                    'postCode'    => (string)($clientNorm['postCode'] ?? ''),
-                    'town'        => (string)($clientNorm['town'] ?? ''),
-                    'province'    => (string)($clientNorm['province'] ?? ''),
-                    'countryCode' => (string)($clientNorm['countryCode'] ?? 'ESP'),
-                ];
-                $ctype = strtolower((string)($clientNorm['entityType'] ?? 'company'));
-                if ($ctype === 'freelancer') {
-                    $buyerData['isLegalEntity'] = false;
-                    $buyerData['name']          = (string)($clientNorm['firstName'] ?? '');
-                    $buyerData['firstSurname']  = (string)($clientNorm['lastName'] ?? '');
-                    $buyerData['lastSurname']   = (string)($clientNorm['secondSurname'] ?? '');
-                } else {
-                    $buyerData['isLegalEntity'] = true;
-                    $buyerData['name']          = (string)($clientNorm['name'] ?? '');
-                }
-
-                // Residencia fiscal (R/U/E) → ResidenceTypeCode
-                $residency = isset($clientNorm['residency']) ? (string)$clientNorm['residency'] : '';
-                if ($residency === 'resident_es') {
-                    $buyerData['countryCode'] = 'ESP';
-                } elseif ($residency === 'eu') {
-                    $buyerData['isEuropeanUnionResident'] = true;
-                } elseif ($residency === 'non_eu') {
-                    $buyerData['isEuropeanUnionResident'] = false;
-                }
-
-                // DIR3 canónicos (con fallback)
-                $buyerData['face_dir3_oc'] = $pick($clientNorm, ['face_dir3_oc','dir3_oc','oc','OC'], $dir3OC);
-                $buyerData['face_dir3_og'] = $pick($clientNorm, ['face_dir3_og','dir3_og','og','OG'], $dir3OG);
-                $buyerData['face_dir3_ut'] = $pick($clientNorm, ['face_dir3_ut','dir3_ut','ut','UT'], $dir3UT);
-
-                // Centros administrativos si existen
-                if (!empty($clientNorm['administrativeCentres']) && is_array($clientNorm['administrativeCentres'])) {
-                    $buyerData['administrativeCentres'] = $clientNorm['administrativeCentres'];
-                } elseif (!empty($clientNorm['centres']) && is_array($clientNorm['centres'])) {
-                    $buyerData['centres'] = $clientNorm['centres'];
-                }
-
-                // Construcción para el generador — SIEMPRE con la fecha guardada en el XML
-                $invoiceArray = [
-                    'series'    => $invoiceSeries,
-                    'number'    => $invoiceNumber,
-                    'issueDate' => date('Y-m-d', strtotime((string)$inv->issueDate)),
-                    'seller'    => $sellerData,
-                    'buyer'     => $buyerData,
-                    'items'     => [],
-                    'certificate' => [
-                        'path'     => $certPath,
-                        'password' => $certPass,
-                    ],
-                    'fileReference'             => (string)($inv->fileReference ?? ''),
-                    'receiverContractReference' => (string)($inv->receiverContractReference ?? ''),
-                    'fileSuffix'                => 'FACE',
-                ];
-
-                // Suplidos e IRPF
-                if (($suplidosAmount = (float)($inv->totalSuplidos ?? 0)) != 0.0) {
-                    $invoiceArray['reimbursable'] = ['amount' => $suplidosAmount];
-                }
-                if (isset($inv->irpfRate)) {
-                    $invoiceArray['irpfRate'] = (float)$inv->irpfRate;
-                }
-
-                // Líneas
-                foreach ($inv->items->item as $item) {
-                    $invoiceArray['items'][] = [
-                        'description'   => (string)$item->description,
-                        'unitPrice'     => (float)$item->unitPrice,
-                        'quantity'      => (float)$item->quantity,
-                        'vat'           => (int)$item->vatRate,
-                        'unitOfMeasure' => '01',
-                    ];
-                }
-
-                // Genera y firma el Facturae (.xsig)
-                $outputDir = __DIR__ . '/data/facturae_exports/';
-                @mkdir($outputDir, 0775, true);
-                $facturaeGenerator = new FacturaeGenerator();
-                $meta    = $facturaeGenerator->generateWithMeta($invoiceArray, $outputDir);
-                $xmlPath = (string)($meta['path'] ?? '');
-                if ($xmlPath === '' || !is_file($xmlPath)) {
-                    json_response(['success'=>false, 'message'=>'No se pudo generar el Facturae (.xsig)'], 500);
-                }
-
-                // Logging de envío
-                $xmlData = @file_get_contents($xmlPath) ?: '';
-                $hasSig  = (bool)preg_match('/<([a-z0-9._-]+:)?Signature\b/i', $xmlData);
-                @file_put_contents($logFace,
-                    '['.date('c')."] send_start xml=".basename($xmlPath)
-                    .' size='.strlen($xmlData)
-                    .' hasSig=' . ($hasSig ? '1' : '0')
-                    .' email=' . ($notifyEmail ?: ($issuer['email'] ?? ''))
-                    .' dir3='.json_encode(['OC'=>$dir3OC,'OG'=>$dir3OG,'UT'=>$dir3UT], JSON_UNESCAPED_UNICODE)
-                    ."\n", FILE_APPEND
-                );
-
-                // Verifica que los 3 DIR3 estén dentro del XML
                 $hasOC = ($dir3OC !== '' && strpos($xmlData, $dir3OC) !== false);
                 $hasOG = ($dir3OG !== '' && strpos($xmlData, $dir3OG) !== false);
                 $hasUT = ($dir3UT !== '' && strpos($xmlData, $dir3UT) !== false);
@@ -467,10 +400,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         '['.date('c').'] send_abort missingDIR3 oc='.($hasOC?'1':'0').' og='.($hasOG?'1':'0').' ut='.($hasUT?'1':'0')
                         .' xml='.basename($xmlPath)."\n", FILE_APPEND
                     );
-                    json_response(['success'=>false, 'message'=>'El Facturae no incluye los tres DIR3 (OC/OG/UT). Revisa los datos del cliente y vuelve a enviar.'], 400);
+                    json_response(['success'=>false, 'message'=>'El Facturae firmado no incluye los tres DIR3 (OC/OG/UT). Revisa los datos antes de reenviar.'], 400);
                 }
 
-                // Enviar a FACe
                 if (!class_exists('\josemmo\Facturae\Face\FaceClient')) {
                     @require_once __DIR__ . '/vendor/josemmo/facturae-php/src/Face/FaceClient.php';
                 }
@@ -478,18 +410,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     @require_once __DIR__ . '/vendor/josemmo/facturae-php/src/FacturaeFile.php';
                 }
 
+                $platformCredentials = ff_platform_credentials();
+                $certPath = $platformCredentials['path'] ?? null;
+                $certPass = (string)($platformCredentials['pass'] ?? '');
+                if (!$certPath || !is_file($certPath)) {
+                    json_response(['success'=>false,'message'=>'No se localizó el certificado de plataforma para el canal FACE.'], 500);
+                }
+                if (!function_exists('openssl_pkcs12_read')) {
+                    json_response(['success'=>false, 'message'=>'PHP sin OpenSSL: no se puede firmar la petición a FACE.'], 500);
+                }
+
                 $factFile = new \josemmo\Facturae\FacturaeFile();
                 $factFile->loadData($xmlData, basename($xmlPath));
 
                 $face = new \josemmo\Facturae\Face\FaceClient(
-                    $certPath,   // P12/PFX del emisor
-                    null,        // clave privada va dentro del P12
-                    $certPass    // passphrase del P12
+                    $certPath,
+                    null,
+                    $certPass
                 );
                 if (method_exists($face, 'setProduction')) { $face->setProduction(true); }
                 // if (method_exists($face, 'setExclusiveC14n')) { $face->setExclusiveC14n(false); }
 
-                if ($notifyEmail === '') $notifyEmail = (string)($issuer['email'] ?? '');
+                if ($notifyEmail === '') $notifyEmail = (string)($issuerData['email'] ?? '');
 
                 $resp = $face->sendInvoice($notifyEmail, $factFile);
                 $arr  = json_decode(json_encode($resp, JSON_PARTIAL_OUTPUT_ON_ERROR), true) ?: [];
@@ -544,12 +486,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     @require_once __DIR__ . '/src/FaceProvidersClient.php';
                 }
                 $faceCfg = [];
-                $cfg = file_exists($cfgPath) ? json_decode((string)@file_get_contents($cfgPath), true) : [];
-                if (is_array($cfg)) {
-                    // Reutiliza p12 del sistema si no hay otro
-                    $issuer = (array)($cfg['issuer'] ?? $cfg);
-                    if (!empty($issuer['certificatePath'])) $faceCfg['p12_path'] = $issuer['certificatePath'];
-                    if (!empty($issuer['certPassword']))     $faceCfg['p12_pass'] = $issuer['certPassword'];
+                $platformCreds = ff_platform_credentials();
+                if (!empty($platformCreds['path'])) {
+                    $faceCfg['p12_path'] = $platformCreds['path'];
+                }
+                if (!empty($platformCreds['pass'])) {
+                    $faceCfg['p12_pass'] = $platformCreds['pass'];
                 }
                 $client = new FaceProvidersClient($faceCfg);
 
@@ -787,10 +729,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $settings['nif'] = strtoupper(preg_replace('/[\s-]+/', '', (string)$_POST['nif']));
                 }
 
-                if (array_key_exists('certPassword', $_POST) && $_POST['certPassword'] !== '') {
-                    $settings['certPassword'] = SecureConfig::encrypt((string)$_POST['certPassword']);
-                }
-
                 // Logo
                 if (isset($_FILES['logo']) && $_FILES['logo']['error'] === UPLOAD_ERR_OK) {
                     $uploadDir = __DIR__ . '/data/uploads/';
@@ -801,34 +739,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         if (!empty($settings['logoPath']) && file_exists($settings['logoPath'])) @unlink($settings['logoPath']);
                         $settings['logoPath'] = 'data/uploads/' . $logoName;
                     }
-                }
-
-                // Certificado general del emisor (conservar nombre original)
-                if (isset($_FILES['certificate']) && $_FILES['certificate']['error'] === UPLOAD_ERR_OK) {
-                    $certsDir = __DIR__ . '/data/certs/';
-                    if (!is_dir($certsDir)) { @mkdir($certsDir, 0775, true); }
-
-                    $origName = basename((string)$_FILES['certificate']['name']);
-                    $safeName = preg_replace('/[^A-Za-z0-9._-]+/', '_', $origName);
-                    $destPath = $certsDir . $safeName;
-
-                    if (is_file($destPath)) {
-                        $i = 1;
-                        $parts = pathinfo($safeName);
-                        $base  = $parts['filename'] ?? 'cert';
-                        $ext   = isset($parts['extension']) ? ('.' . $parts['extension']) : '';
-                        do {
-                            $destPath = $certsDir . $base . "_{$i}" . $ext;
-                            $i++;
-                        } while (is_file($destPath));
-                    }
-
-                    if (!move_uploaded_file($_FILES['certificate']['tmp_name'], $destPath)) {
-                        json_response(['success' => false, 'message' => 'No se pudo guardar el certificado del emisor.'], 400);
-                    }
-                    @chmod($destPath, 0640);
-
-                    $settings['certificatePath'] = $destPath;
                 }
 
                 // Merge NO destructivo de FACeB2B si este formulario trae campos faceb2b
@@ -1045,173 +955,27 @@ if ($page === 'settings' && isset($_GET['download_verifactu'])) {
 
 // ----------------- MANEJADOR GET PARA EXPORTAR FACTURA-E -----------------
 if ($page === 'export_facturae') {
+    $invoiceId = (string)($_GET['id'] ?? '');
+    if ($invoiceId === '') {
+        header('Content-Type: text/plain; charset=utf-8');
+        die('Falta el identificador de la factura.');
+    }
+
     $invoiceManager = new InvoiceManager();
-    $invoiceId      = $_GET['id'] ?? null;
-    $invoiceObject  = $invoiceId ? $invoiceManager->getInvoiceById((string)$invoiceId) : null;
-
-    $issuerObject = file_exists($cfgPath) ? json_decode((string)@file_get_contents($cfgPath), true) : [];
-
-    if (!$invoiceObject || empty($issuerObject)) {
+    $signedInfo = $invoiceManager->getSignedFacturaeInfo($invoiceId);
+    if (!$signedInfo || empty($signedInfo['absolutePath']) || !is_file($signedInfo['absolutePath'])) {
         header('Content-Type: text/plain; charset=utf-8');
-        die("Error: No se pudo encontrar la factura o los datos del emisor.");
+        die('La factura no está firmada todavía. Firma con AutoFirma y vuelve a exportar.');
     }
 
-    // Serie y número a partir del ID
-    $idParts       = explode('-', (string)$invoiceObject->id);
-    $invoiceSeries = ($idParts[0] ?? 'FAC') . ($idParts[1] ?? date('Y'));
-    $invoiceNumber = $idParts[2] ?? '0001';
-
-    // Fecha de emisión: usar la guardada
-    $storedIssueDate = (string)($invoiceObject->issueDate ?? '');
-    $dtCheck = \DateTimeImmutable::createFromFormat('!Y-m-d', $storedIssueDate);
-    if ($storedIssueDate === '' || !$dtCheck || $dtCheck->format('Y-m-d') !== $storedIssueDate) {
-        header('Content-Type: text/plain; charset=utf-8');
-        die("Error: La factura no tiene issueDate válido (debería haberse fijado al crearla).");
-    }
-
-    // Emisor (seller)
-    $sellerData = [
-        'taxNumber'   => (string)($issuerObject['nif'] ?? ''),
-        'address'     => (string)($issuerObject['address'] ?? ''),
-        'postCode'    => (string)($issuerObject['postCode'] ?? ''),
-        'town'        => (string)($issuerObject['town'] ?? ''),
-        'province'    => (string)($issuerObject['province'] ?? ''),
-        'countryCode' => 'ESP',
-    ];
-    if (($issuerObject['entityType'] ?? 'company') === 'freelancer') {
-        $sellerData['isLegalEntity'] = false;
-        $sellerData['name']          = (string)($issuerObject['firstName'] ?? '');
-        $sellerData['firstSurname']  = (string)($issuerObject['lastName'] ?? '');
-        $sellerData['lastSurname']   = (string)($issuerObject['secondSurname'] ?? '');
-    } else {
-        $sellerData['isLegalEntity'] = true;
-        $sellerData['name']          = (string)($issuerObject['companyName'] ?? '');
-    }
-
-    // DESCIFRA contraseña del certificado si viene cifrada
-    $certPass = $issuerObject['certPassword'] ?? null;
-    if (class_exists('SecureConfig') && is_string($certPass) && str_starts_with($certPass, 'enc:v1:')) {
-        $certPass = SecureConfig::decrypt($certPass);
-    }
-
-    // --- Buyer a partir del cliente normalizado + mapeo DIR3 robusto ---
-    $clientNorm = Normalizers::client($invoiceObject->client);
-
-    // Helper para buscar claves alternativas de DIR3 en $clientNorm
-    $pick = static function(array $src, array $keys): string {
-        foreach ($keys as $k) {
-            if (isset($src[$k]) && trim((string)$src[$k]) !== '') {
-                return (string)$src[$k];
-            }
-        }
-        return '';
-    };
-
-    $buyerData = [
-        'taxNumber'   => (string)($clientNorm['nif'] ?? ''),
-        'address'     => (string)($clientNorm['address'] ?? ''),
-        'postCode'    => (string)($clientNorm['postCode'] ?? ''),
-        'town'        => (string)($clientNorm['town'] ?? ''),
-        'province'    => (string)($clientNorm['province'] ?? ''),
-        'countryCode' => (string)($clientNorm['countryCode'] ?? 'ESP'),
-    ];
-    $ctype = strtolower((string)($clientNorm['entityType'] ?? 'company'));
-    if ($ctype === 'freelancer') {
-        $buyerData['isLegalEntity'] = false;
-        $buyerData['name']          = (string)($clientNorm['firstName'] ?? '');
-        $buyerData['firstSurname']  = (string)($clientNorm['lastName'] ?? '');
-        $buyerData['lastSurname']   = (string)($clientNorm['secondSurname'] ?? '');
-    } else {
-        $buyerData['isLegalEntity'] = true;
-        $buyerData['name']          = (string)($clientNorm['name'] ?? '');
-    }
-
-    // Residencia fiscal (R/U/E)
-    $residency = isset($clientNorm['residency']) ? (string)$clientNorm['residency'] : '';
-    if ($residency === 'resident_es') {
-        $buyerData['countryCode'] = 'ESP';
-    } elseif ($residency === 'eu') {
-        $buyerData['isEuropeanUnionResident'] = true;
-    } elseif ($residency === 'non_eu') {
-        $buyerData['isEuropeanUnionResident'] = false;
-    }
-
-    // Canoniza claves DIR3 hacia face_dir3_oc/og/ut
-    $buyerData['face_dir3_oc'] = strtoupper(trim($pick($clientNorm, ['face_dir3_oc', 'dir3_oc', 'oc', 'OC'])));
-    $buyerData['face_dir3_og'] = strtoupper(trim($pick($clientNorm, ['face_dir3_og', 'dir3_og', 'og', 'OG'])));
-    $buyerData['face_dir3_ut'] = strtoupper(trim($pick($clientNorm, ['face_dir3_ut', 'dir3_ut', 'ut', 'UT'])));
-
-    // Centros administrativos si existen
-    if (!empty($clientNorm['administrativeCentres']) && is_array($clientNorm['administrativeCentres'])) {
-        $buyerData['administrativeCentres'] = $clientNorm['administrativeCentres'];
-    } elseif (!empty($clientNorm['centres']) && is_array($clientNorm['centres'])) {
-        $buyerData['centres'] = $clientNorm['centres'];
-    }
-
-    // Construcción del array para el generador
-    $invoiceArray = [
-        'series'    => $invoiceSeries,
-        'number'    => $invoiceNumber,
-        'issueDate' => $storedIssueDate,
-        'seller'    => $sellerData,
-        'buyer'     => $buyerData,
-        'items'     => [],
-        'certificate' => [
-            'path'     => $issuerObject['certificatePath'] ?? null,
-            'password' => $certPass,
-        ],
-        'fileReference'             => (string)($invoiceObject->fileReference ?? ''),
-        'receiverContractReference' => (string)($invoiceObject->receiverContractReference ?? ''),
-    ];
-
-    // Suplidos (opcional)
-    $suplidosAmount = (float)($invoiceObject->totalSuplidos ?? 0);
-    if ($suplidosAmount != 0.0) {
-        $invoiceArray['reimbursable'] = ['amount' => $suplidosAmount];
-    }
-
-    // IRPF (si aplica)
-    if (isset($invoiceObject->irpfRate)) {
-        $invoiceArray['irpfRate'] = (float)$invoiceObject->irpfRate;
-    }
-
-    // Líneas
-    foreach ($invoiceObject->items->item as $item) {
-        $invoiceArray['items'][] = [
-            'description'   => (string)$item->description,
-            'unitPrice'     => (float)$item->unitPrice,
-            'quantity'      => (float)$item->quantity,
-            'vat'           => (int)$item->vatRate,
-            'unitOfMeasure' => '01',
-        ];
-    }
-
-    // Marca de exportación manual
-    $invoiceArray['fileSuffix'] = 'EXPORT';
-
-    $old_disp = ini_set('display_errors', '0');
-    try {
-        $facturaeGenerator = new FacturaeGenerator();
-        $outputDir = __DIR__ . '/data/facturae_exports/';
-        @mkdir($outputDir, 0775, true);
-        // Genera y devuelve la ruta al fichero .xsig
-        $filePath = $facturaeGenerator->generate($invoiceArray, $outputDir);
-        if (!$filePath || !is_file($filePath)) {
-            header('Content-Type: text/plain; charset=utf-8');
-            die("Error al generar la Factura-e: fichero no creado.");
-        }
-        header('Content-Type: application/xml; charset=utf-8');
-        header('Content-Disposition: attachment; filename="' . basename($filePath) . '"');
-        readfile($filePath);
-    } catch (\Throwable $e) {
-        if ($old_disp !== false) ini_set('display_errors', $old_disp);
-        header('Content-Type: text/plain; charset=utf-8');
-        die("Error al generar la Factura-e:\n\n" . $e->getMessage());
-    } finally {
-        if ($old_disp !== false) ini_set('display_errors', $old_disp);
-    }
+    $filePath = $signedInfo['absolutePath'];
+    $fileName = basename($filePath);
+    header('Content-Type: application/xml; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . $fileName . '"');
+    readfile($filePath);
     exit;
 }
+
 
 // ----------------- RENDERIZADO DE PÁGINAS GET -----------------
 ob_start();
@@ -1278,6 +1042,15 @@ switch ($page) {
                 return strcmp((string)$b->id, (string)$a->id);
             });
         }
+        $signedMap = [];
+        foreach ($invoices as $inv) {
+            $id = (string)($inv->id ?? '');
+            if ($id === '') continue;
+            $info = $im->getSignedFacturaeInfo($id);
+            if ($info) {
+                $signedMap[$id] = $info;
+            }
+        }
         include __DIR__ . '/templates/invoice_list.php';
         break;
     }
@@ -1287,6 +1060,7 @@ switch ($page) {
         $im = new InvoiceManager();
         $invoice = $invoiceId !== '' ? $im->getInvoiceById($invoiceId) : null;
         $issuer = file_exists($cfgPath) ? (array)json_decode((string)file_get_contents($cfgPath), true) : [];
+        $signedInfo = $invoice ? $im->getSignedFacturaeInfo($invoiceId) : null;
         include __DIR__ . '/templates/view_invoice.php';
         break;
     }

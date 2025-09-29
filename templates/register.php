@@ -313,22 +313,17 @@
           
 
           <fieldset>
-            <legend>Certificado y logo</legend>
-            <div class="row">
-              <div class="col">
-                <label for="certificate">Certificado (.p12 / .pfx)</label>
-                <input id="certificate" name="certificate" type="file" accept=".p12,.pfx,application/x-pkcs12">
-              </div>
-              <div class="col">
-                <label for="certPassword">Contraseña del certificado</label>
-                <input id="certPassword" name="certPassword" type="password" autocomplete="new-password">
-                <div class="help">Se almacenará cifrada.</div>
-              </div>
-            </div>
+            <legend>Logo y AutoFirma</legend>
             <div class="row">
               <div class="col">
                 <label for="logo">Logo (opcional)</label>
                 <input id="logo" name="logo" type="file" accept="image/*">
+              </div>
+              <div class="col">
+                <label>AutoFirma</label>
+                <div id="register-autofirma-status" class="help">Pendiente de comprobar.</div>
+                <button type="button" id="register-autofirma-check" class="btn" style="margin-top:0.5rem;">Detectar AutoFirma</button>
+                <div class="help">FacturaFlow no almacena tu certificado. Debes firmar localmente con AutoFirma.</div>
               </div>
             </div>
           </fieldset>
@@ -371,6 +366,7 @@
     </div>
   </div>
 
+  <script src="public/js/autofirma.js"></script>
   <script>
   (function(){
     const form = document.getElementById('register-form');
@@ -382,6 +378,9 @@
     const personBox  = document.getElementById('person-box');
     const irpfBox    = document.getElementById('irpf-box');
     const irpfSel    = document.getElementById('irpfRate');
+    const autofirmaBtn = document.getElementById('register-autofirma-check');
+    const autofirmaStatus = document.getElementById('register-autofirma-status');
+    let autofirmaReady = false;
 
     function toggleType(){
       const type = (form.querySelector('input[name="entityType"]:checked')||{}).value || 'company';
@@ -475,9 +474,49 @@
 
     form.addEventListener('submit', onSubmit);
     // Habilita/deshabilita botón según casilla
-    const toggleBtn = () => { btn.disabled = !chk.checked; }
+    const toggleBtn = () => {
+      const enabled = chk.checked && autofirmaReady;
+      btn.disabled = !enabled;
+      if (!enabled && autofirmaStatus) {
+        autofirmaStatus.textContent = chk.checked
+          ? 'AutoFirma pendiente de detectar.'
+          : 'Debes aceptar las Condiciones y detectar AutoFirma.';
+      }
+    };
     chk.addEventListener('change', toggleBtn);
     toggleBtn();
+
+    if (autofirmaBtn) {
+      autofirmaBtn.addEventListener('click', async function(){
+        if (!globalThis.AutofirmaClient || typeof AutofirmaClient.detect !== 'function') {
+          if (autofirmaStatus) {
+            autofirmaStatus.textContent = 'No se pudo cargar el módulo de AutoFirma.';
+          }
+          return;
+        }
+        autofirmaBtn.disabled = true;
+        if (autofirmaStatus) {
+          autofirmaStatus.textContent = 'Comprobando protocolo afirma://...';
+        }
+        try {
+          const res = await AutofirmaClient.detect({ timeout: 2000 });
+          autofirmaReady = !!(res && res.ok);
+          if (autofirmaStatus) {
+            autofirmaStatus.textContent = res && res.ok
+              ? 'AutoFirma disponible (protocolo).'
+              : (res && res.message ? res.message : 'Protocolo afirma:// no disponible. Abre AutoFirma y vuelve a intentar.');
+          }
+        } catch (err) {
+          autofirmaReady = false;
+          if (autofirmaStatus) {
+            autofirmaStatus.textContent = err && err.message ? err.message : 'No se pudo comprobar AutoFirma.';
+          }
+        } finally {
+          autofirmaBtn.disabled = false;
+          toggleBtn();
+        }
+      });
+    }
   })();
   </script>
 </body>

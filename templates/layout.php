@@ -160,7 +160,6 @@ $settings = file_exists($settingsFile) ? json_decode(file_get_contents($settings
     </form>
     
 </body>
-</html>
 <script>
 // Marca como activa la opción de menú de la página actual
 (function(){
@@ -173,3 +172,4 @@ $settings = file_exists($settingsFile) ? json_decode(file_get_contents($settings
   });
 })();
 </script>
+</html>

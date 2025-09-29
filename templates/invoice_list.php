@@ -51,6 +51,7 @@ $pageItems = array_slice($all, ($currPage - 1) * $perPage, $perPage);
         <th>Fecha</th>
         <th style="text-align:right; min-width:8rem;">Importe</th>
         <th style="text-align:center;">Estado de Pagos</th>
+        <th style="text-align:center;">Firma</th>
         <th style="text-align:center;">Ver</th>
         <th style="text-align:center;">AEAT</th>
         <th style="text-align:center;">FACeB2B</th>
@@ -59,7 +60,7 @@ $pageItems = array_slice($all, ($currPage - 1) * $perPage, $perPage);
     </thead>
     <tbody>
     <?php if (empty($pageItems)): ?>
-      <tr><td colspan="10" class="muted" style="text-align:center; padding:2rem;">No hay facturas todavía.</td></tr>
+      <tr><td colspan="11" class="muted" style="text-align:center; padding:2rem;">No hay facturas todavía.</td></tr>
     <?php else: ?>
       <?php foreach ($pageItems as $invoice):
         $id               = (string)($invoice->id ?? '');
@@ -209,6 +210,8 @@ $pageItems = array_slice($all, ($currPage - 1) * $perPage, $perPage);
         <td><?= date('d/m/Y', strtotime((string)$invoice->issueDate)) ?></td>
         <td style="text-align:right;"><?= number_format((float)($invoice->totalAmount ?? 0), 2, ',', '.') ?> €</td>
 
+        <?php $signedInfo = $signedMap[$id] ?? null; $isSigned = $signedInfo !== null; ?>
+
         <!-- Estado de pagos FACeB2B -->
         <td style="text-align:center;">
           <?php if ($payStatus !== ''): ?>
@@ -217,6 +220,20 @@ $pageItems = array_slice($all, ($currPage - 1) * $perPage, $perPage);
           <?php else: ?>
             &nbsp; <!-- sin estado -->
           <?php endif; ?>
+        </td>
+
+        <!-- Firma -->
+        <td style="text-align:center;">
+          <?php if ($isSigned): ?>
+            <?php $signedAt = !empty($signedInfo['signedAt']) ? date('d/m/Y H:i', strtotime($signedInfo['signedAt'])) : null; ?>
+            <span class="pill pill-ok" title="<?= htmlspecialchars($signedAt ? ('Firmada el '.$signedAt) : 'Firmada con AutoFirma') ?>">Firmada</span>
+          <?php else: ?>
+            <span class="pill pill-wait" title="Pendiente de firma local">Sin firmar</span>
+            <div style="margin-top:.25rem;"><a class="btn btn-small" href="index.php?page=view_invoice&id=<?= urlencode($id) ?>">Firmar</a></div>
+          <?php endif; ?>
+          <div class="muted" style="margin-top:.35rem; font-size:.8rem;">
+            <a href="https://github.com/ciamaximalista/facturaflow#guia-integracion-autofirma" target="_blank" rel="noopener" title="¿Problemas para firmar? Abre la guía de integración y solución de problemas.">¿Problemas para firmar?</a>
+          </div>
         </td>
 
         <td style="text-align:center;">
@@ -259,7 +276,11 @@ $pageItems = array_slice($all, ($currPage - 1) * $perPage, $perPage);
             <?php else: ?>
               <div style="display:flex; flex-direction:column; align-items:center; gap:.3rem;">
                 <span class="pill pill-wait" title="Pendiente de envío por FACeB2B">Pendiente</span>
-                <button type="button" class="btn btn-small faceb2b-retry" data-id="<?= htmlspecialchars($invoiceId) ?>">Enviar</button>
+                <?php if ($isSigned): ?>
+                  <button type="button" class="btn btn-small faceb2b-retry" data-id="<?= htmlspecialchars($invoiceId) ?>">Enviar</button>
+                <?php else: ?>
+                  <button type="button" class="btn btn-small" disabled title="Firma pendiente">Enviar</button>
+                <?php endif; ?>
               </div>
             <?php endif; ?>
           <?php endif; ?>
@@ -312,7 +333,11 @@ $pageItems = array_slice($all, ($currPage - 1) * $perPage, $perPage);
             <?php else: ?>
               <div style="display:flex; flex-direction:column; align-items:center; gap:.3rem;">
                 <span class="pill pill-wait" title="Pendiente de envío a FACE">Pendiente</span>
-                <button type="button" class="btn btn-small face-send" data-id="<?= htmlspecialchars($invoiceId) ?>">Enviar</button>
+                <?php if ($isSigned): ?>
+                  <button type="button" class="btn btn-small face-send" data-id="<?= htmlspecialchars($invoiceId) ?>">Enviar</button>
+                <?php else: ?>
+                  <button type="button" class="btn btn-small" disabled title="Firma pendiente">Enviar</button>
+                <?php endif; ?>
               </div>
             <?php endif; ?>
           <?php endif; ?>
