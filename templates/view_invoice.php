@@ -238,47 +238,47 @@ $bannerText = match (mb_strtolower($payStatus, 'UTF-8')) {
   'pendiente de pago' => 'Aceptada; pendiente de pago' . ($acceptedAt ? ' · ' . $fmtDate($acceptedAt) : ''),
   default             => 'Pendiente de aceptación',
 };
+
+
+    $downloadPath = $signedInfo['path'] ?? null;
+    $signedAtText = isset($signedInfo['signedAt']) && $signedInfo['signedAt'] !== ''
+        ? date('d/m/Y H:i', strtotime($signedInfo['signedAt']))
+        : null;
+
+
 ?>
 
-<div class="invoice-view-header">
-    <h2>
-        Factura: <?php echo htmlspecialchars((string)$invoice->id); ?>
-        <?php if ($isRectificative): ?><span class="badge badge-rectificative">Rectificativa</span><?php endif; ?>
-        <?php if ($cancelled): ?><span class="badge badge-cancelled">Rectificada</span><?php endif; ?>
-    </h2>
-    <div>
         <form id="faceb2bSyncFormView" method="POST" action="index.php" style="display:inline-block; margin-right:.4rem;">
             <input type="hidden" name="action" value="sync_faceb2b">
             <button id="btnSyncFaceB2BView" class="btn btn-primary" type="submit">🔄 Sincronizar FACeB2B</button>
             <span id="faceb2bSyncMsgView" class="muted" style="margin-left:.5rem;"></span>
         </form>
+
+<div class="invoice-view-header">
+    <h2>
+        Factura: <?php echo htmlspecialchars((string)$invoice->id); ?>
+        
+        <?php if ($isRectificative): ?><span class="badge badge-rectificative">Rectificativa</span><?php endif; ?>
+        <?php if ($cancelled): ?><span class="badge badge-cancelled">Rectificada</span><?php endif; ?>
+    </h2>
+    <span id="signature-status-pill" class="pill pill-ok">Creada & Firmada el <?= $signedAtText ? ' · ' . htmlspecialchars($signedAtText) : '' ?></span>
+    <div>
+
         <?php
           // Número de registro FACeB2B (usado por otras funcionalidades)
           $reg = isset($invoice->faceb2b->registrationCode) ? (string)$invoice->faceb2b->registrationCode : '';
         ?>
-        <a href="index.php?page=print_invoice&id=<?php echo urlencode((string)$invoice->id); ?>" class="btn">PDF para imprimir</a>
-        <a href="index.php?page=export_facturae&id=<?php echo urlencode((string)$invoice->id); ?>" class="btn">Exportar Factura-e (XSIG)</a>
         <?php if (!$cancelled): ?>
             <a href="index.php?page=rectify_prompt&id=<?php echo urlencode((string)$invoice->id); ?>" class="btn btn-danger">Rectificar</a>
         <?php endif; ?>
-</div>
+        
+        <a href="index.php?page=print_invoice&id=<?php echo urlencode((string)$invoice->id); ?>" class="btn">PDF para imprimir</a>
 
-<?php
-    $downloadPath = $signedInfo['path'] ?? null;
-    $signedAtText = isset($signedInfo['signedAt']) && $signedInfo['signedAt'] !== ''
-        ? date('d/m/Y H:i', strtotime($signedInfo['signedAt']))
-        : null;
-    $signButtonLabel = $signedInfo ? 'Re-firmar con AutoFirma' : 'Firmar con AutoFirma';
-?>
 
-<div class="signature-panel" data-signed="<?= $signedInfo ? '1' : '0' ?>">
-    <div class="signature-status">
-        <strong>Firma AutoFirma:</strong>
-        <?php if ($signedInfo): ?>
-            <span id="signature-status-pill" class="pill pill-ok">Firmada<?= $signedAtText ? ' · ' . htmlspecialchars($signedAtText) : '' ?></span>
-        <?php else: ?>
-            <span id="signature-status-pill" class="pill pill-wait">Sin firmar</span>
-        <?php endif; ?>
+
+
+
+
         <a id="signature-download"
            class="btn btn-extra-small"
            href="<?= $signedInfo && $downloadPath ? htmlspecialchars($downloadPath) : '#' ?>"
@@ -287,35 +287,10 @@ $bannerText = match (mb_strtolower($payStatus, 'UTF-8')) {
            Descargar Facturae
         </a>
     </div>
-    <div class="signature-actions">
-        <button type="button" id="signature-action-btn" class="btn" data-invoice-id="<?= htmlspecialchars((string)$invoice->id) ?>">
-            <?= htmlspecialchars($signButtonLabel) ?>
-        </button>
-        <span id="signature-action-msg" class="muted"></span>
-    </div>
-    <?php if (!$signedInfo): ?>
-    <div class="autofirma-instructions">
-        <strong>Para firmar con AutoFirma:</strong>
-        <ol id="autofirma-steps">
-            <li>Tener AutoFirma instalado y abierto.</li>
-            <li>Permitir este dominio en AutoFirma si se solicita.</li>
-            <li>Instalar el configurador/extensión del navegador solo si se solicita.</li>
-            <li>Pulsa «Firmar con AutoFirma».</li>
-        </ol>
-        <p id="autofirma-status-text" class="muted"></p>
-        <a id="autofirma-configurator-link"
-           href="https://firmaelectronica.gob.es/Home/Descargas.html"
-           target="_blank" rel="noopener"
-           class="btn btn-small"
-           style="margin-top:0.6rem; display:none;">
-           Instalar configurador (solo si el protocolo falla)
-        </a>
-        <p class="muted" style="margin-top:0.4rem;">
-            ¿Problemas? Consulta la <a href="https://github.com/ciamaximalista/facturaflow#guia-integracion-autofirma" target="_blank" rel="noopener">guía de integración</a>.
-        </p>
-    </div>
-    <?php endif; ?>
-</div>
+
+
+
+
 
 
 </div>

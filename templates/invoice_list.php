@@ -51,7 +51,6 @@ $pageItems = array_slice($all, ($currPage - 1) * $perPage, $perPage);
         <th>Fecha</th>
         <th style="text-align:right; min-width:8rem;">Importe</th>
         <th style="text-align:center;">Estado de Pagos</th>
-        <th style="text-align:center;">Firma</th>
         <th style="text-align:center;">Ver</th>
         <th style="text-align:center;">AEAT</th>
         <th style="text-align:center;">FACeB2B</th>
@@ -223,18 +222,6 @@ $pageItems = array_slice($all, ($currPage - 1) * $perPage, $perPage);
         </td>
 
         <!-- Firma -->
-        <td style="text-align:center;">
-          <?php if ($isSigned): ?>
-            <?php $signedAt = !empty($signedInfo['signedAt']) ? date('d/m/Y H:i', strtotime($signedInfo['signedAt'])) : null; ?>
-            <span class="pill pill-ok" title="<?= htmlspecialchars($signedAt ? ('Firmada el '.$signedAt) : 'Firmada con AutoFirma') ?>">Firmada</span>
-          <?php else: ?>
-            <span class="pill pill-wait" title="Pendiente de firma local">Sin firmar</span>
-            <div style="margin-top:.25rem;"><a class="btn btn-small" href="index.php?page=view_invoice&id=<?= urlencode($id) ?>">Firmar</a></div>
-          <?php endif; ?>
-          <div class="muted" style="margin-top:.35rem; font-size:.8rem;">
-            <a href="https://github.com/ciamaximalista/facturaflow#guia-integracion-autofirma" target="_blank" rel="noopener" title="¿Problemas para firmar? Abre la guía de integración y solución de problemas.">¿Problemas para firmar?</a>
-          </div>
-        </td>
 
         <td style="text-align:center;">
           <a style="font-size:22px; text-decoration:none; line-height:1; display:inline-block;" href="index.php?page=view_invoice&id=<?= urlencode($id) ?>">👁</a>

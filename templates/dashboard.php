@@ -12,7 +12,9 @@ $rx = new ReceivedManager();
 $dmClients = new DataManager('clients');
 $dmProducts = new DataManager('products');
 
-$invoices = array_values(array_filter($im->getAllInvoices(), function($inv){
+$allInvoices = $im->getAllInvoices();
+
+$invoices = array_values(array_filter($allInvoices, function($inv){
   return !(isset($inv->isCancelled) && strtolower((string)$inv->isCancelled) === 'true');
 }));
 $received = $rx->listAll();
@@ -250,18 +252,57 @@ $monthStartEnd = function(string $cp, string $cs, string $ce): array {
 $months = [];
 for ($d = clone $chartStart; $d <= $chartEnd; $d->modify('+1 month')) { $months[] = $d->format('Y-m'); }
 
+$toFloat = static function($value): float {
+  if (is_int($value) || is_float($value)) return (float)$value;
+  $raw = trim((string)$value);
+  if ($raw === '') return 0.0;
+  $norm = str_replace([' ', "\xc2\xa0"], '', $raw);
+  $norm = str_replace(',', '.', $norm);
+  return (float)$norm;
+};
+
+$chartInvoices = $allInvoices;
+
 $emitBase = array_fill_keys($months, 0.0);
-foreach ($invoices as $inv) {
-  $d = (string)($inv->issueDate ?? ''); if ($d==='') continue; $ym = date('Y-m', strtotime($d));
-  if (!array_key_exists($ym, $emitBase)) continue; $emitBase[$ym] += (float)($inv->totalBase ?? 0.0);
+foreach ($chartInvoices as $inv) {
+  $d = (string)($inv->issueDate ?? '');
+  if ($d === '') continue;
+  $ts = strtotime($d); if (!$ts) continue;
+  $ym = date('Y-m', $ts);
+  if (!array_key_exists($ym, $emitBase)) continue;
+
+  $rawBase = $toFloat($inv->totalBase ?? 0.0);
+  $base = abs($rawBase);
+  $isRect = isset($inv->isRectificative) && strtolower((string)$inv->isRectificative) === 'true';
+
+  $emitBase[$ym] += $isRect ? -$base : $base;
 }
 
 $recvBase = array_fill_keys($months, 0.0);
 foreach ($received as $r) {
-  $d = (string)($r['issueDate'] ?? ($r['uploadedAt'] ?? '')); if ($d==='') continue; $ym = date('Y-m', strtotime($d));
-  if (!array_key_exists($ym, $recvBase)) continue; $id=(string)($r['id'] ?? ''); $base=0.0;
-  if ($id!=='') { try { $vd=$rx->getViewDataById($id); $t=(array)($vd['totals'] ?? []); $base=(float)($t['base'] ?? 0.0); } catch (\Throwable $e) {} }
-  $recvBase[$ym] += $base;
+  $d = (string)($r['issueDate'] ?? ($r['uploadedAt'] ?? ''));
+  if ($d === '') continue;
+  $ts = strtotime($d); if (!$ts) continue;
+  $ym = date('Y-m', $ts);
+  if (!array_key_exists($ym, $recvBase)) continue; $id=(string)($r['id'] ?? '');
+
+  $rawBase = null;
+  if ($id!=='') {
+    try {
+      $vd = $rx->getViewDataById($id);
+      if (!empty($vd['success'])) {
+        $t = (array)($vd['totals'] ?? []);
+        if (array_key_exists('base', $t)) $rawBase = (float)$t['base'];
+      }
+    } catch (\Throwable $e) {}
+  }
+  if ($rawBase === null) {
+    $rawBase = $toFloat($r['totalAmount'] ?? 0.0);
+  }
+
+  $base = abs($rawBase);
+  $isRect = $rawBase < 0;
+  $recvBase[$ym] += $isRect ? -$base : $base;
 }
 
 $labels = array_map(fn($ym)=>date('m/y', strtotime($ym.'-01')), $months);

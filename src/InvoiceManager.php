@@ -529,8 +529,6 @@ final class InvoiceManager {
     public function generateFreshForFaceB2B(string $invoiceId, string $dire): string {
         return $this->generateFacturaeFreshForFaceB2B($invoiceId, $dire);
     }
-
-
     /** hash y qr verifactu */
     public function embedVerifactuMeta(string $invoiceId, array $meta): void {
         $xml = $this->getInvoiceById($invoiceId);
@@ -631,6 +629,11 @@ final class InvoiceManager {
                 $clientObj = $dm->getItemById($clientId);
             }
         } catch (\Throwable $e) { $clientObj = null; }
+
+        // Si no se suministra el DIRe explícitamente, toma el de la ficha del cliente.
+        if (($receivingDire === null || trim($receivingDire) === '') && $clientObj && isset($clientObj->dire)) {
+            $receivingDire = (string)$clientObj->dire;
+        }
 
         // Construye buyer con máximos datos disponibles
         $buyerEntityType = (string)($cliXml->entityType ?? ($clientObj->entityType ?? 'company'));

@@ -138,6 +138,7 @@ foreach ($products as $p) {
 .invoice-items th, .invoice-items td { padding:.4rem .5rem; border-bottom:1px solid var(--border-color); }
 </style>
 
+<script src="public/js/autofirma.js"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   // Datos inyectados
@@ -384,32 +385,163 @@ document.addEventListener('DOMContentLoaded', () => {
     onOptionChange();
   })();
 
-  // ===== Envío del formulario =====
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
+  const submitBtn = form.querySelector('button[type="submit"]');
+  const originalBtnLabel = submitBtn ? submitBtn.textContent : '';
+  const statusLine = document.createElement('p');
+  statusLine.className = 'muted';
+  statusLine.style.margin = '0.5rem 0 0';
+  statusLine.style.textAlign = 'right';
+  if (submitBtn && submitBtn.parentNode) {
+    submitBtn.parentNode.appendChild(statusLine);
+  }
 
-    // Normaliza TODOS los inputs num-es a formato máquina (1234.56) ANTES de capturar el FormData
+  let pendingInvoiceId = null;
+  let redirecting = false;
+
+  function setStatus(message, kind = 'info') {
+    if (!statusLine) return;
+    statusLine.textContent = message || '';
+    statusLine.style.color = kind === 'error' ? '#b91c1c' : (kind === 'success' ? '#166534' : '#4b5563');
+  }
+
+  function decodeBase64ToString(b64) {
+    try {
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const decoder = new TextDecoder('utf-8');
+      return decoder.decode(bytes);
+    } catch (err) {
+      console.error('decodeBase64ToString error', err);
+      throw new Error('No se pudo preparar el XML de la factura para firmar.');
+    }
+  }
+
+  function friendlyAutofirmaMessage(err) {
+    const base = err && err.message ? String(err.message) : 'No se pudo completar la firma con AutoFirma.';
+    if (globalThis.AutofirmaClient && typeof AutofirmaClient.messageFor === 'function') {
+      return AutofirmaClient.messageFor(err && err.reason ? err.reason : '', base);
+    }
+    return base;
+  }
+
+  async function fetchUnsignedXml(invoiceId) {
+    const params = new URLSearchParams();
+    params.set('action', 'get_unsigned_facturae');
+    params.set('id', invoiceId);
+    const res = await fetch('index.php', {
+      method: 'POST',
+      body: params,
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      credentials: 'same-origin'
+    });
+    let data;
+    try {
+      data = await res.json();
+    } catch (err) {
+      console.error('Respuesta no JSON al preparar la factura para firmar', err);
+      throw new Error('El servidor devolvió una respuesta no válida al preparar la firma.');
+    }
+    if (!res.ok || !data || !data.success || !data.xml) {
+      throw new Error((data && data.message) || 'No se pudo obtener el Facturae para AutoFirma.');
+    }
+    return data.xml;
+  }
+
+  async function signWithAutofirma(invoiceId) {
+    if (!globalThis.AutofirmaClient || typeof AutofirmaClient.signFacturaeXml !== 'function') {
+      const err = new Error('AutoFirma no está disponible en este navegador. Abre la aplicación e inténtalo de nuevo.');
+      err.reason = 'protocol-unavailable';
+      throw err;
+    }
+
+    setStatus('Preparando factura para AutoFirma…');
+    const unsignedB64 = await fetchUnsignedXml(invoiceId);
+    const xmlString = decodeBase64ToString(unsignedB64);
+
+    setStatus('Se ha lanzado AutoFirma. Firma la factura cuando se solicite…');
+    const result = await AutofirmaClient.signFacturaeXml(xmlString, invoiceId + '.xsig', { invoiceId });
+    const saveResponse = result && result.saveResponse ? result.saveResponse : result;
+    const meta = saveResponse && saveResponse.meta ? saveResponse.meta : null;
+    const signedAt = meta && meta.signedAt ? new Date(meta.signedAt) : null;
+
+    const label = signedAt ? 'Factura firmada correctamente · ' + signedAt.toLocaleString() : 'Factura firmada correctamente.';
+    setStatus(label, 'success');
+    if (submitBtn) {
+      submitBtn.textContent = 'Firmada';
+    }
+    redirecting = true;
+    setTimeout(() => {
+      window.location.href = 'index.php?page=invoices';
+    }, 1200);
+  }
+
+  async function createInvoiceAndSign() {
     form.querySelectorAll('input.num-es').forEach(el => {
       const normalized = (el.value || '').replace(/\./g,'').replace(',', '.');
       el.value = normalized;
     });
 
+    setStatus('Guardando factura en el servidor…');
     const fd = new FormData(form);
+    const resp = await fetch('index.php', { method:'POST', body: fd, credentials:'same-origin' });
+    const ct = (resp.headers.get('content-type') || '').toLowerCase();
+    const raw = await resp.text();
+    if (!ct.includes('application/json')) {
+      console.error('Respuesta no JSON al crear la factura:', raw.slice(0, 300));
+      throw new Error('El servidor devolvió una respuesta no válida al crear la factura.');
+    }
+
+    let result;
     try {
-      const resp = await fetch('index.php', { method:'POST', body: fd, credentials:'same-origin' });
-      const ct  = (resp.headers.get('content-type') || '').toLowerCase();
-      const raw = await resp.text();
-      if (!ct.includes('application/json')) throw new Error('Respuesta no JSON del servidor:\n' + raw.slice(0,300));
-      const result = JSON.parse(raw);
-      if (resp.ok && result.success) {
-        alert('Factura creada con éxito: ' + result.invoiceId);
-        window.location.href = 'index.php?page=invoices';
+      result = JSON.parse(raw);
+    } catch (err) {
+      throw new Error('No se pudo interpretar la respuesta del servidor.');
+    }
+
+    if (!resp.ok || !result || !result.success) {
+      throw new Error((result && result.message) || 'No se pudo guardar la factura.');
+    }
+
+    pendingInvoiceId = result.invoiceId;
+    if (submitBtn) {
+      submitBtn.textContent = 'Firmar con AutoFirma';
+    }
+    setStatus('Factura guardada. Iniciando firma…');
+    await signWithAutofirma(pendingInvoiceId);
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!submitBtn || submitBtn.disabled) return;
+
+    submitBtn.disabled = true;
+    if (pendingInvoiceId) {
+      setStatus('Reintentando firma con AutoFirma…');
+    }
+
+    try {
+      if (pendingInvoiceId) {
+        await signWithAutofirma(pendingInvoiceId);
       } else {
-        throw new Error(result.message || 'Error desconocido al crear la factura');
+        await createInvoiceAndSign();
       }
     } catch (err) {
-      console.error('Error de comunicación:', err);
-      alert('Error de comunicación. Revisa la consola del navegador.');
+      console.error('Error en la creación o firma de la factura:', err);
+      const friendly = friendlyAutofirmaMessage(err);
+      setStatus(friendly, 'error');
+      if (pendingInvoiceId && submitBtn) {
+        submitBtn.textContent = 'Firmar con AutoFirma';
+      }
+    } finally {
+      if (!redirecting && submitBtn) {
+        submitBtn.disabled = false;
+        if (!pendingInvoiceId) {
+          submitBtn.textContent = originalBtnLabel;
+        }
+      }
     }
   }, {capture:true});
 
