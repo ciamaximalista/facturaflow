@@ -427,6 +427,61 @@ document.addEventListener('DOMContentLoaded', () => {
     return base;
   }
 
+  async function ensureAutofirmaAvailable() {
+    if (!globalThis.AutofirmaClient || typeof AutofirmaClient.detect !== 'function') {
+      const err = new Error('AutoFirma no está disponible en este navegador. Abre la aplicación e inténtalo de nuevo.');
+      err.reason = 'protocol-unavailable';
+      throw err;
+    }
+
+    setStatus('Comprobando AutoFirma…');
+    const availability = await AutofirmaClient.detect({ timeout: 7000 });
+    if (!availability || availability.ok !== true) {
+      const message = availability && availability.message ? availability.message : 'AutoFirma no está disponible. Abre la aplicación e inténtalo de nuevo.';
+      const err = new Error(message);
+      err.reason = availability && availability.reason ? availability.reason : 'protocol-unavailable';
+      throw err;
+    }
+  }
+
+  async function rollbackInvoice(invoiceId) {
+    if (!invoiceId) return false;
+    try {
+      const params = new URLSearchParams();
+      params.set('action', 'delete_invoice');
+      params.set('id', invoiceId);
+      const response = await fetch('index.php', {
+        method: 'POST',
+        body: params,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'same-origin'
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data || data.success !== true) {
+        throw new Error((data && data.message) || '');
+      }
+      console.info('Factura no firmada eliminada automáticamente', { invoiceId, server: data });
+      return true;
+    } catch (cleanupErr) {
+      console.error('No se pudo eliminar la factura sin firmar tras el error de firma', cleanupErr);
+      return false;
+    }
+  }
+
+  function restoreSpanishNumberInputs() {
+    form.querySelectorAll('input.num-es').forEach(el => {
+      if (!el) return;
+      const raw = (el.value || '').trim();
+      if (raw === '') return;
+      const decimals = Number(el.getAttribute('data-decimals') || 2);
+      const numeric = Number(raw.replace(',', '.'));
+      if (Number.isFinite(numeric)) {
+        el.value = formatNumberES(numeric, decimals);
+      }
+    });
+    updateTotals();
+  }
+
   async function fetchUnsignedXml(invoiceId) {
     const params = new URLSearchParams();
     params.set('action', 'get_unsigned_facturae');
@@ -526,15 +581,29 @@ document.addEventListener('DOMContentLoaded', () => {
       if (pendingInvoiceId) {
         await signWithAutofirma(pendingInvoiceId);
       } else {
+        await ensureAutofirmaAvailable();
         await createInvoiceAndSign();
       }
     } catch (err) {
       console.error('Error en la creación o firma de la factura:', err);
-      const friendly = friendlyAutofirmaMessage(err);
-      setStatus(friendly, 'error');
-      if (pendingInvoiceId && submitBtn) {
-        submitBtn.textContent = 'Firmar con AutoFirma';
+      const failedInvoiceId = pendingInvoiceId;
+      let cleaned = false;
+      if (failedInvoiceId) {
+        cleaned = await rollbackInvoice(failedInvoiceId);
+        pendingInvoiceId = null;
       }
+      const friendly = friendlyAutofirmaMessage(err);
+      let suffix = '';
+      if (failedInvoiceId) {
+        suffix = cleaned
+          ? ' La factura no se ha guardado.'
+          : ' La factura no se ha guardado. Revisa en "Mis facturas" por si aparece como borrador.';
+      }
+      setStatus(friendly + suffix, 'error');
+      if (submitBtn) {
+        submitBtn.textContent = originalBtnLabel;
+      }
+      restoreSpanishNumberInputs();
     } finally {
       if (!redirecting && submitBtn) {
         submitBtn.disabled = false;

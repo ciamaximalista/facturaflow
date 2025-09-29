@@ -254,6 +254,46 @@ final class InvoiceManager {
     }
 
     /**
+     * Elimina la factura indicada siempre que no esté firmada.
+     * Devuelve ['success'=>bool, 'message'=>string]
+     */
+    public function deleteInvoice(string $invoiceId, bool $force = false) : array {
+        $invoiceId = trim($invoiceId);
+        if ($invoiceId === '') {
+            return ['success' => false, 'message' => 'Falta el identificador de la factura.'];
+        }
+
+        $path = $this->getInvoicePathFromId($invoiceId);
+        if (!is_file($path)) {
+            $this->log('delete_invoice', ['id' => $invoiceId, 'status' => 'not_found']);
+            return ['success' => true, 'message' => 'La factura no existe o ya ha sido eliminada.'];
+        }
+
+        $xml = @simplexml_load_file($path) ?: null;
+        if ($xml && !$force) {
+            $hasSignature = isset($xml->signedFacturae) && trim((string)$xml->signedFacturae->path) !== '';
+            if ($hasSignature) {
+                return ['success' => false, 'message' => 'La factura ya está firmada y no puede eliminarse automáticamente.'];
+            }
+        }
+
+        // Limpia posible fichero Facturae asociado (solo si existe y no está firmado).
+        if ($xml && isset($xml->signedFacturae->path)) {
+            $signedPath = $this->toAbsolutePath((string)$xml->signedFacturae->path);
+            if ($signedPath && is_file($signedPath)) {
+                @unlink($signedPath);
+            }
+        }
+
+        if (!@unlink($path)) {
+            return ['success' => false, 'message' => 'No se pudo eliminar la factura del disco.'];
+        }
+
+        $this->log('delete_invoice', ['id' => $invoiceId, 'status' => 'deleted', 'path' => $path]);
+        return ['success' => true, 'message' => 'Factura eliminada correctamente.'];
+    }
+
+    /**
      * Crea una rectificativa negativa de la original.
      */
     public function createRectificative(string $originalInvoiceId, string $reason = '', string $series = 'R') : array {

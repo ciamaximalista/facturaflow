@@ -223,6 +223,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 break;
             }
 
+            case 'delete_invoice': {
+                $invoiceId = trim((string)($_POST['id'] ?? $_POST['invoiceId'] ?? ''));
+                if ($invoiceId === '') {
+                    json_response(['success' => false, 'message' => 'Falta el identificador de la factura.'], 400);
+                }
+
+                try {
+                    $im = new InvoiceManager();
+                    $result = $im->deleteInvoice($invoiceId);
+                    $code = !empty($result['success']) ? 200 : 400;
+                    json_response($result, $code);
+                } catch (Throwable $e) {
+                    json_response(['success' => false, 'message' => 'No se pudo eliminar la factura: ' . $e->getMessage()], 500);
+                }
+                break;
+            }
+
             case 'rectify_create': {
                 $originalId = (string)($_POST['id'] ?? '');
                 $reason = trim((string)($_POST['reason'] ?? ''));
